@@ -1,2 +1,1 @@
 streamlit>=1.36
-streamlit-timeline>=0.0.2
