@@ -47,7 +47,7 @@ def as_list(x: Any) -> List[Any]:
 def normalize_state(items_any: Any, groups_any: Any):
     items_n = [normalize_item(i) for i in as_list(items_any) if i is not None]
     groups_n = [normalize_group(g) for g in as_list(groups_any) if g is not None]
-    if not groups_n:  # ensure at least one category
+    if not groups_n:
         groups_n = [normalize_group({"id": "General", "content": "General"})]
     return items_n, groups_n
 
@@ -56,21 +56,21 @@ def export_payload() -> Dict[str, Any]:
     return {"items": items_n, "groups": groups_n}
 
 def reset_defaults():
-    st.session_state.items = []
-    st.session_state.groups = [
+    st.session_state["items"] = []
+    st.session_state["groups"] = [
         {"id": "Core", "content": "Core"},
         {"id": "UX", "content": "UX"},
         {"id": "Infra", "content": "Infra"},
     ]
 
 # ---------------------- INITIAL STATE (FORCE SANITY) ----------------------
-if "items" not in st.session_state and "groups" not in st.session_state:
+if "items" not in st.session_state or "groups" not in st.session_state:
     reset_defaults()
 
-# Coerce to valid lists every run
+# Always coerce to valid lists on each run
 items_n, groups_n = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
-st.session_state.items = items_n
-st.session_state.groups = groups_n
+st.session_state["items"] = items_n
+st.session_state["groups"] = groups_n
 
 # ---------------------- HEADER ----------------------
 left, right = st.columns([1, 1], vertical_alignment="center")
@@ -82,8 +82,8 @@ with right:
         st.markdown("**Filters**")
         selected_groups = st.multiselect(
             "Categories",
-            [g["id"] for g in st.session_state.groups],
-            default=[g["id"] for g in st.session_state.groups],
+            [g["id"] for g in st.session_state["groups"]],
+            default=[g["id"] for g in st.session_state["groups"]],
             label_visibility="collapsed",
         )
 
@@ -91,11 +91,10 @@ with right:
 with st.sidebar:
     st.header("➕ Add item")
 
-    # Ensure there is at least one category to select
-    if not st.session_state.groups:
-        st.session_state.groups = [normalize_group({"id": "General", "content": "General"})]
+    if not st.session_state["groups"]:
+        st.session_state["groups"] = [normalize_group({"id": "General", "content": "General"})]
 
-    group_ids = [g["id"] for g in st.session_state.groups] or ["General"]
+    group_ids = [g["id"] for g in st.session_state["groups"]] or ["General"]
 
     with st.form("add_item", clear_on_submit=True):
         content = st.text_input("Title", "")
@@ -109,10 +108,9 @@ with st.sidebar:
         comment = st.text_area("Comment (tooltip)", "")
         submitted = st.form_submit_button("Add")
         if submitted:
-            # Ensure items is a list before appending
             if not isinstance(st.session_state.get("items"), list):
-                st.session_state.items = []
-            st.session_state.items.append(
+                st.session_state["items"] = []
+            st.session_state["items"].append(
                 normalize_item({
                     "id": str(uuid.uuid4()),
                     "content": content or "Untitled",
@@ -130,11 +128,11 @@ with st.sidebar:
     new_cat = st.text_input("New category id")
     cols = st.columns(2)
     if cols[0].button("Add category"):
-        if new_cat and not any(g["id"] == new_cat for g in st.session_state.groups):
-            st.session_state.groups.append(normalize_group({"id": new_cat, "content": new_cat}))
+        if new_cat and not any(g["id"] == new_cat for g in st.session_state["groups"]):
+            st.session_state["groups"].append(normalize_group({"id": new_cat, "content": new_cat}))
             st.success(f"Added category “{new_cat}”.")
-    if cols[1].button("Remove last category") and st.session_state.groups:
-        removed = st.session_state.groups.pop()
+    if cols[1].button("Remove last category") and st.session_state["groups"]:
+        removed = st.session_state["groups"].pop()
         st.warning(f"Removed “{removed['id']}”")
 
     st.divider()
@@ -152,7 +150,7 @@ with st.sidebar:
             loaded = json.load(uploaded)
             items_in = loaded.get("items", [])
             groups_in = loaded.get("groups", [])
-            st.session_state.items, st.session_state.groups = normalize_state(items_in, groups_in)
+            st.session_state["items"], st.session_state["groups"] = normalize_state(items_in, groups_in)
             st.success("Roadmap loaded.")
         except Exception as e:
             st.error(f"Invalid JSON: {e}")
@@ -197,7 +195,7 @@ with st.expander("Danger zone: delete item by ID"):
     del_id = st.text_input("Item ID to delete")
     if st.button("Delete item"):
         if not isinstance(st.session_state.get("items"), list):
-            st.session_state.items = []
-        before = len(st.session_state.items)
-        st.session_state.items = [i for i in st.session_state.items if normalize_item(i)["id"] != del_id]
-        st.info(f"Deleted {before - len(st.session_state.items)} item(s).")
+            st.session_state["items"] = []
+        before = len(st.session_state["items"])
+        st.session_state["items"] = [i for i in st.session_state["items"] if normalize_item(i)["id"] != del_id]
+        st.info(f"Deleted {before - len(st.session_state['items'])} item(s).")
