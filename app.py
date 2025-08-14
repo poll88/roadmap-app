@@ -162,9 +162,27 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Invalid JSON: {e}")
 
-# ---------------------- FILTER + TIMELINE ----------------------
-visible_items = [i for i in st.session_state.items if i.get("group") in selected_groups]
-groups_for_timeline = [g for g in st.session_state.groups if g["id"] in selected_groups]
+# ---------------------- FILTER + TIMELINE (HARDENED) ----------------------
+# Make a fast set of selected group ids (as strings)
+selected_ids = {str(x) for x in (selected_groups or [])}
+
+# Ensure every item is a normalized dict and only keep those with a valid group
+safe_items = []
+for raw in st.session_state.get("items", []):
+    # coerce non-dicts and clean dates/ids/etc.
+    it = normalize_item(raw)
+    if str(it.get("group", "")) in selected_ids:
+        safe_items.append(it)
+
+# Ensure groups are normalized dicts and filtered by selection
+safe_groups = []
+for raw in st.session_state.get("groups", []):
+    g = normalize_group(raw)
+    if g["id"] in selected_ids:
+        safe_groups.append(g)
+
+visible_items = safe_items
+groups_for_timeline = safe_groups
 
 options = {
     "stack": True,
