@@ -8,7 +8,6 @@ from streamlit_timeline import timeline
 
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
-
 st.markdown("""
 <style>
 .block-container {padding-top: 1.5rem; padding-bottom: 1rem;}
@@ -19,11 +18,9 @@ st.markdown("""
 
 # ---------------------- HELPERS ----------------------
 def iso(x: Any) -> Any:
-    """Return ISO string for date/datetime, else x as-is."""
     return x.isoformat() if hasattr(x, "isoformat") else x
 
 def normalize_item(it: Any) -> Dict[str, Any]:
-    """Ensure an item contains only JSON-safe primitives."""
     if not isinstance(it, dict):
         it = {}
     return {
@@ -37,51 +34,41 @@ def normalize_item(it: Any) -> Dict[str, Any]:
     }
 
 def normalize_group(g: Any) -> Dict[str, Any]:
-    """Ensure a group is JSON-safe."""
     if not isinstance(g, dict):
         g = {}
-    gid = g.get("id") or g.get("content") or "Group"
+    gid = g.get("id") or g.get("content") or "General"
     return {"id": str(gid), "content": str(g.get("content", gid))}
 
 def as_list(x: Any) -> List[Any]:
-    """Coerce anything to a list safely."""
     if isinstance(x, list):
         return x
-    if x is None:
-        return []
-    # Avoid turning strings/dicts into lists of chars/keys
-    if isinstance(x, (str, bytes, dict)):
-        return []
-    try:
-        return list(x)
-    except Exception:
-        return []
+    return [] if x is None or isinstance(x, (str, bytes, dict)) else (list(x) if hasattr(x, "__iter__") else [])
 
 def normalize_state(items_any: Any, groups_any: Any):
-    items_seq = as_list(items_any)
-    groups_seq = as_list(groups_any)
-    items_n = [normalize_item(i) for i in items_seq if i is not None]
-    groups_n = [normalize_group(g) for g in groups_seq if g is not None]
+    items_n = [normalize_item(i) for i in as_list(items_any) if i is not None]
+    groups_n = [normalize_group(g) for g in as_list(groups_any) if g is not None]
+    if not groups_n:  # ensure at least one category
+        groups_n = [normalize_group({"id": "General", "content": "General"})]
     return items_n, groups_n
 
 def export_payload() -> Dict[str, Any]:
     items_n, groups_n = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
     return {"items": items_n, "groups": groups_n}
 
-# ---------------------- INITIAL STATE ----------------------
-# Always coerce to normalized defaults once per run
-base_items = st.session_state.get("items")
-base_groups = st.session_state.get("groups")
-
-items_n, groups_n = normalize_state(
-    base_items if base_items is not None else [],
-    base_groups if base_groups is not None else [
+def reset_defaults():
+    st.session_state.items = []
+    st.session_state.groups = [
         {"id": "Core", "content": "Core"},
         {"id": "UX", "content": "UX"},
         {"id": "Infra", "content": "Infra"},
-    ],
-)
+    ]
 
+# ---------------------- INITIAL STATE (FORCE SANITY) ----------------------
+if "items" not in st.session_state and "groups" not in st.session_state:
+    reset_defaults()
+
+# Coerce to valid lists every run
+items_n, groups_n = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
 st.session_state.items = items_n
 st.session_state.groups = groups_n
 
@@ -103,9 +90,16 @@ with right:
 # ---------------------- SIDEBAR ----------------------
 with st.sidebar:
     st.header("➕ Add item")
+
+    # Ensure there is at least one category to select
+    if not st.session_state.groups:
+        st.session_state.groups = [normalize_group({"id": "General", "content": "General"})]
+
+    group_ids = [g["id"] for g in st.session_state.groups] or ["General"]
+
     with st.form("add_item", clear_on_submit=True):
         content = st.text_input("Title", "")
-        group = st.selectbox("Category", [g["id"] for g in st.session_state.groups])
+        group = st.selectbox("Category", group_ids, index=0)
         c1, c2 = st.columns(2)
         with c1:
             start = st.date_input("Start", date.today())
@@ -115,12 +109,15 @@ with st.sidebar:
         comment = st.text_area("Comment (tooltip)", "")
         submitted = st.form_submit_button("Add")
         if submitted:
+            # Ensure items is a list before appending
+            if not isinstance(st.session_state.get("items"), list):
+                st.session_state.items = []
             st.session_state.items.append(
                 normalize_item({
                     "id": str(uuid.uuid4()),
                     "content": content or "Untitled",
-                    "start": start,   # normalized to ISO
-                    "end": end,       # normalized to ISO
+                    "start": start,
+                    "end": end,
                     "group": group,
                     "title": comment,
                     "style": f"background-color:{color}",
@@ -131,18 +128,17 @@ with st.sidebar:
     st.divider()
     st.header("🏷️ Categories")
     new_cat = st.text_input("New category id")
-    if st.button("Add category"):
+    cols = st.columns(2)
+    if cols[0].button("Add category"):
         if new_cat and not any(g["id"] == new_cat for g in st.session_state.groups):
             st.session_state.groups.append(normalize_group({"id": new_cat, "content": new_cat}))
             st.success(f"Added category “{new_cat}”.")
-    if st.button("Remove last category") and st.session_state.groups:
+    if cols[1].button("Remove last category") and st.session_state.groups:
         removed = st.session_state.groups.pop()
         st.warning(f"Removed “{removed['id']}”")
 
     st.divider()
     st.header("📦 Import / Export")
-
-    # --- Export (safe) ---
     safe_payload = export_payload()
     st.download_button(
         "Download JSON",
@@ -150,7 +146,6 @@ with st.sidebar:
         file_name="roadmap.json",
     )
 
-    # --- Import (normalize) ---
     uploaded = st.file_uploader("Upload JSON", type="json")
     if uploaded:
         try:
@@ -162,45 +157,38 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Invalid JSON: {e}")
 
+    st.divider()
+    if st.button("🔄 Reset data (factory defaults)"):
+        reset_defaults()
+        st.experimental_rerun()
+
 # ---------------------- FILTER + TIMELINE (HARDENED) ----------------------
-# Make a fast set of selected group ids (as strings)
 selected_ids = {str(x) for x in (selected_groups or [])}
 
-# Ensure every item is a normalized dict and only keep those with a valid group
 safe_items = []
 for raw in st.session_state.get("items", []):
-    # coerce non-dicts and clean dates/ids/etc.
     it = normalize_item(raw)
-    if str(it.get("group", "")) in selected_ids:
+    if not selected_ids or str(it.get("group", "")) in selected_ids:
         safe_items.append(it)
 
-# Ensure groups are normalized dicts and filtered by selection
 safe_groups = []
 for raw in st.session_state.get("groups", []):
     g = normalize_group(raw)
-    if g["id"] in selected_ids:
+    if not selected_ids or g["id"] in selected_ids:
         safe_groups.append(g)
-
-visible_items = safe_items
-groups_for_timeline = safe_groups
 
 options = {
     "stack": True,
-    "editable": True,              # drag / resize
+    "editable": True,
     "margin": {"item": 12, "axis": 6},
     "orientation": "top",
     "multiselect": True,
     "zoomKey": "ctrlKey",
 }
 
-payload_for_timeline = {
-    "items": visible_items,
-    "groups": groups_for_timeline,
-    "options": options
-}
+payload_for_timeline = {"items": safe_items, "groups": safe_groups, "options": options}
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
-# default=str protects against any residual non-JSON values
 timeline(json.dumps(payload_for_timeline, default=str), height=620)
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -208,7 +196,8 @@ st.markdown("</div>", unsafe_allow_html=True)
 with st.expander("Danger zone: delete item by ID"):
     del_id = st.text_input("Item ID to delete")
     if st.button("Delete item"):
+        if not isinstance(st.session_state.get("items"), list):
+            st.session_state.items = []
         before = len(st.session_state.items)
-        st.session_state.items = [i for i in st.session_state.items if i["id"] != del_id]
-        removed = before - len(st.session_state.items)
-        st.info(f"Deleted {removed} item(s).")
+        st.session_state.items = [i for i in st.session_state.items if normalize_item(i)["id"] != del_id]
+        st.info(f"Deleted {before - len(st.session_state.items)} item(s).")
