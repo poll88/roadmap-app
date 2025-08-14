@@ -9,7 +9,6 @@ from streamlit_timeline import timeline
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
 
-# --- light polish ---
 st.markdown("""
 <style>
 .block-container {padding-top: 1.5rem; padding-bottom: 1rem;}
@@ -23,44 +22,68 @@ def iso(x: Any) -> Any:
     """Return ISO string for date/datetime, else x as-is."""
     return x.isoformat() if hasattr(x, "isoformat") else x
 
-def normalize_item(it: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure an item only contains JSON-serializable primitives."""
+def normalize_item(it: Any) -> Dict[str, Any]:
+    """Ensure an item contains only JSON-safe primitives."""
+    if not isinstance(it, dict):
+        it = {}
     return {
         "id": str(it.get("id") or uuid.uuid4()),
         "content": str(it.get("content", "")),
-        "start": iso(it.get("start")),
-        "end": iso(it.get("end")),
+        "start": iso(it.get("start", "")),
+        "end": iso(it.get("end", "")),
         "group": str(it.get("group", "")),
         "title": str(it.get("title", "")),
         "style": str(it.get("style", "")),
     }
 
-def normalize_group(g: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure a group only contains JSON-serializable primitives."""
-    gid = g.get("id") if "id" in g else g.get("content")
-    return {
-        "id": str(gid),
-        "content": str(g.get("content", gid)),
-    }
+def normalize_group(g: Any) -> Dict[str, Any]:
+    """Ensure a group is JSON-safe."""
+    if not isinstance(g, dict):
+        g = {}
+    gid = g.get("id") or g.get("content") or "Group"
+    return {"id": str(gid), "content": str(g.get("content", gid))}
 
-def normalize_state(items: List[Dict[str, Any]], groups: List[Dict[str, Any]]):
-    items_n = [normalize_item(i) for i in items if i is not None]
-    groups_n = [normalize_group(g) for g in groups if g is not None]
+def as_list(x: Any) -> List[Any]:
+    """Coerce anything to a list safely."""
+    if isinstance(x, list):
+        return x
+    if x is None:
+        return []
+    # Avoid turning strings/dicts into lists of chars/keys
+    if isinstance(x, (str, bytes, dict)):
+        return []
+    try:
+        return list(x)
+    except Exception:
+        return []
+
+def normalize_state(items_any: Any, groups_any: Any):
+    items_seq = as_list(items_any)
+    groups_seq = as_list(groups_any)
+    items_n = [normalize_item(i) for i in items_seq if i is not None]
+    groups_n = [normalize_group(g) for g in groups_seq if g is not None]
     return items_n, groups_n
 
 def export_payload() -> Dict[str, Any]:
-    items_n, groups_n = normalize_state(st.session_state.items, st.session_state.groups)
+    items_n, groups_n = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
     return {"items": items_n, "groups": groups_n}
 
 # ---------------------- INITIAL STATE ----------------------
-if "items" not in st.session_state:
-    st.session_state.items = []
-if "groups" not in st.session_state:
-    st.session_state.groups = [
+# Always coerce to normalized defaults once per run
+base_items = st.session_state.get("items")
+base_groups = st.session_state.get("groups")
+
+items_n, groups_n = normalize_state(
+    base_items if base_items is not None else [],
+    base_groups if base_groups is not None else [
         {"id": "Core", "content": "Core"},
         {"id": "UX", "content": "UX"},
         {"id": "Infra", "content": "Infra"},
-    ]
+    ],
+)
+
+st.session_state.items = items_n
+st.session_state.groups = groups_n
 
 # ---------------------- HEADER ----------------------
 left, right = st.columns([1, 1], vertical_alignment="center")
@@ -93,17 +116,15 @@ with st.sidebar:
         submitted = st.form_submit_button("Add")
         if submitted:
             st.session_state.items.append(
-                normalize_item(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "content": content or "Untitled",
-                        "start": start,            # normalize_item will iso() it
-                        "end": end,                # normalize_item will iso() it
-                        "group": group,
-                        "title": comment,
-                        "style": f"background-color:{color}",
-                    }
-                )
+                normalize_item({
+                    "id": str(uuid.uuid4()),
+                    "content": content or "Untitled",
+                    "start": start,   # normalized to ISO
+                    "end": end,       # normalized to ISO
+                    "group": group,
+                    "title": comment,
+                    "style": f"background-color:{color}",
+                })
             )
             st.success("Item added.")
 
@@ -122,10 +143,10 @@ with st.sidebar:
     st.header("📦 Import / Export")
 
     # --- Export (safe) ---
-    payload = export_payload()
+    safe_payload = export_payload()
     st.download_button(
         "Download JSON",
-        data=json.dumps(payload, indent=2, default=str),   # default=str avoids serialization errors
+        data=json.dumps(safe_payload, indent=2, default=str),
         file_name="roadmap.json",
     )
 
@@ -143,7 +164,7 @@ with st.sidebar:
 
 # ---------------------- FILTER + TIMELINE ----------------------
 visible_items = [i for i in st.session_state.items if i.get("group") in selected_groups]
-groups = [g for g in st.session_state.groups if g["id"] in selected_groups]
+groups_for_timeline = [g for g in st.session_state.groups if g["id"] in selected_groups]
 
 options = {
     "stack": True,
@@ -154,10 +175,15 @@ options = {
     "zoomKey": "ctrlKey",
 }
 
-payload_for_timeline = {"items": visible_items, "groups": groups, "options": options}
+payload_for_timeline = {
+    "items": visible_items,
+    "groups": groups_for_timeline,
+    "options": options
+}
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
-timeline(json.dumps(payload_for_timeline, default=str), height=620)  # default=str as extra safety
+# default=str protects against any residual non-JSON values
+timeline(json.dumps(payload_for_timeline, default=str), height=620)
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------------- DANGER ZONE ----------------------
