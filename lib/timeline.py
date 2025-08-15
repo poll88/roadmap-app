@@ -6,21 +6,10 @@ def render_timeline(items, groups):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
-    options = {
-        "editable": {"add": False, "remove": False, "updateGroup": True, "updateTime": True},
-        "stack": True,
-        "margin": {"item": 14, "axis": 8},
-        "orientation": "top",
-        "multiselect": True,
-        # We'll implement custom wheel behavior; leave zoomable true but controlled by ctrlKey.
-        "zoomKey": "ctrlKey",
-        "zoomable": True,
-        # Disable built-in horizontalScroll so default wheel scrolls the page.
-        "horizontalScroll": False,
-        "timeAxis": {"scale": "month", "step": 1}
-    }
-
-    # Lane backgrounds (category tint)
+    # Prepare JSON strings to avoid f-string brace pitfalls
+    items_json  = json.dumps(items)
+    groups_json = json.dumps(groups)
+    # Background lane items
     bg_items = [{
         "id": f"bg-{g['id']}",
         "group": g["id"],
@@ -29,17 +18,10 @@ def render_timeline(items, groups):
         "type": "background",
         "className": f"lane-{g['id']}"
     } for g in groups]
+    bg_json = json.dumps(bg_items)
 
-    # Styled bars with room for two lines
-    styled = []
-    for it in items:
-        base = it.get("color", "#5ac8fa")
-        style = (
-            f"background: linear-gradient(180deg,{base} 0%, {base}cc 100%);"
-            "border:none;color:#0f172a;border-radius:22px;box-shadow:0 2px 6px rgba(0,0,0,.08);"
-            "padding:8px 14px;min-height:44px;"
-        )
-        styled.append({**it, "style": style})
+    # Inline CSS for lane tints
+    lane_css = "".join([f".lane-{g['id']}{{{{ background:{g['laneColor']}; }}}} " for g in groups])
 
     html = f"""
     <html>
@@ -71,103 +53,154 @@ def render_timeline(items, groups):
 
           .vis-item.vis-background {{ border-radius:16px; }}
           .vis-delete {{ display:none !important; }}
+          /* lane tints injected below */
         </style>
       </head>
       <body>
         <div id="toolbar">
-          <button id="export" class="btn">Export PNG</button>
-          <button id="today" class="btn">Today</button>
-          <button id="zin" class="btn">Zoom In</button>
-          <button id="zout" class="btn">Zoom Out</button>
+          <button id="btn-export" class="btn">Export PNG</button>
+          <button id="btn-today"  class="btn">Today</button>
+          <button id="btn-zoom-in"  class="btn">Zoom In</button>
+          <button id="btn-zoom-out" class="btn">Zoom Out</button>
         </div>
         <div id="tl"></div>
 
         <script>
-          const itemsData  = new vis.DataSet({json.dumps(styled)});
-          const groupsData = new vis.DataSet({json.dumps(groups)});
-          const bgData     = new vis.DataSet({json.dumps(bg_items)});
+          // Data from Python
+          const ITEMS   = JSON.parse({json.dumps(items_json)});
+          const GROUPS  = JSON.parse({json.dumps(groups_json)});
+          const BG      = JSON.parse({json.dumps(bg_json)});
 
+          // Style for lane tints
+          const styleEl = document.createElement('style');
+          styleEl.innerHTML = {json.dumps(lane_css)};
+          document.head.appendChild(styleEl);
+
+          // Decorate items (style + keep subtitle/status)
+          const styled = ITEMS.map(it => {{
+            const base = it.color || "#5ac8fa";
+            const style = [
+              "background: linear-gradient(180deg,"+base+" 0%,"+base+"cc 100%)",
+              "border:none",
+              "color:#0f172a",
+              "border-radius:22px",
+              "box-shadow:0 2px 6px rgba(0,0,0,.08)",
+              "padding:8px 14px",
+              "min-height:44px"
+            ].join(";");
+            return Object.assign({{}}, it, {{ style }});
+          }});
+
+          // Build timeline
           const container  = document.getElementById('tl');
-          const timeline   = new vis.Timeline(
-            container,
-            new vis.DataSet([...bgData.get(), ...itemsData.get()]),
-            groupsData,
-            {json.dumps(options)}
-          );
+          const itemsDS    = new vis.DataSet([...BG, ...styled]);
+          const groupsDS   = new vis.DataSet(GROUPS);
 
-          // Template: title + optional status pill + subtitle (2 lines)
+          const options = {{
+            editable: {{ add:false, remove:false, updateGroup:true, updateTime:true }},
+            stack: true,
+            margin: {{ item:14, axis:8 }},
+            orientation: "top",
+            multiselect: true,
+            zoomKey: "ctrlKey",     // Ctrl+wheel zooms
+            zoomable: true,
+            horizontalScroll: false, // default wheel -> page scrolls
+            timeAxis: {{ scale:"month", step:1 }}
+          }};
+
+          const timeline = new vis.Timeline(container, itemsDS, groupsDS, options);
+
+          // Rich template: title + status pill + subtitle
           timeline.setOptions({{
-            template: function (item) {{
+            template: function(item) {{
               if (!item || item.type === 'background') return '';
-              const t = item.content ? `<span class="title">${{item.content}}</span>` : '';
-              const s = item.status ? `<span class="status">${{item.status}}</span>` : '';
+              const t   = item.content  ? `<span class="title">${{item.content}}</span>`     : '';
+              const pill= item.status   ? `<span class="status">${{item.status}}</span>`     : '';
               const sub = item.subtitle ? `<span class="subtitle">${{item.subtitle}}</span>` : '';
-              return `<div class="inner"><div class="row1">${{t}}${{s}}</div>${{sub}}</div>`;
+              return `<div class="inner"><div class="row1">${{t}}${{pill}}</div>${{sub}}</div>`;
             }}
           }});
 
-          // lane tints
-          const styleEl = document.createElement('style');
-          styleEl.innerHTML = {json.dumps("".join([f".lane-{g['id']}{{ background:{g['laneColor']}; }} " for g in groups]))};
-          document.head.appendChild(styleEl);
-
-          // Today marker + helpers
-          function addToday() {{
+          // Today line
+          function showToday() {{
             const now = new Date();
             if (!timeline.customTimes || !timeline.customTimes.get('today')) {{
               timeline.addCustomTime(now, 'today');
             }} else {{
               timeline.setCustomTime(now, 'today');
             }}
-            const el = timeline.customTimes.get('today')?.line;
-            if (el) {{ el.style.background = '#3b82f6'; el.style.width = '2px'; }}
+            const line = timeline.customTimes.get('today')?.line;
+            if (line) {{ line.style.background = '#3b82f6'; line.style.width = '2px'; }}
           }}
 
-          function centerToToday() {{
-            const now = new Date();
-            const span = 1000 * 60 * 60 * 24 * 90; // +/- 90 days
-            timeline.setWindow(new Date(+now - span), new Date(+now + span), {{ animation: true }});
-            timeline.moveTo(now, {{ animation: true }});
+          // Fit to data (not the whole century)
+          function fitToData() {{
+            const realItems = styled.filter(i => !i.type || i.type !== 'background');
+            if (realItems.length === 0) return;
+            const starts = realItems.map(i => new Date(i.start)).filter(d => !isNaN(+d));
+            const ends   = realItems.map(i => new Date(i.end   || i.start)).filter(d => !isNaN(+d));
+            if (starts.length === 0 || ends.length === 0) return;
+            const min = new Date(Math.min.apply(null, starts));
+            const max = new Date(Math.max.apply(null, ends));
+            const pad = (max - min) * 0.08 + 1000*60*60*24*7; // 8% + 1 week
+            timeline.setWindow(new Date(min - pad), new Date(+max + pad), {{ animation: true }});
           }}
-
-          addToday();
-          centerToToday();
-
-          // ---- Wheel behavior ----
-          // Default: allow wheel to bubble (page scrolls).
-          // Shift + wheel: horizontal pan
-          // Ctrl  + wheel: zoom (handled by Vis via zoomKey='ctrlKey', but we'll ensure smoothness)
-          container.addEventListener('wheel', (e) => {{
-            if (e.shiftKey) {{
-              e.preventDefault();
-              const w = timeline.getWindow();
-              const span = w.end - w.start;
-              const shift = span * 0.15 * Math.sign(e.deltaY); // 15% per notch
-              timeline.setWindow(new Date(+w.start + shift), new Date(+w.end + shift));
-            }} else if (e.ctrlKey) {{
-              // Let vis handle via zoomKey, but prevent page zoom on some browsers
-              e.preventDefault();
-              if (e.deltaY < 0) timeline.zoomIn(0.5); else timeline.zoomOut(0.5);
-            }} else {{
-              // no preventDefault -> page scrolls normally
-            }}
-          }}, {{ passive: false }});
 
           // Buttons
-          document.getElementById('today').addEventListener('click', () => {{
-            addToday(); centerToToday();
-          }});
-          document.getElementById('export').addEventListener('click', async () => {{
-            const canvas = await html2canvas(container, {{backgroundColor: '#ffffff', useCORS: true}});
+          document.getElementById('btn-export').addEventListener('click', async () => {{
+            const canvas = await html2canvas(container, {{backgroundColor:'#ffffff', useCORS:true}});
             const link = document.createElement('a');
             link.download = 'roadmap.png';
             link.href = canvas.toDataURL('image/png');
             link.click();
           }});
-          document.getElementById('zin').addEventListener('click', () => timeline.zoomIn(0.5));
-          document.getElementById('zout').addEventListener('click', () => timeline.zoomOut(0.5));
+          document.getElementById('btn-today').addEventListener('click', () => {{
+            showToday();
+            const now = new Date();
+            const span = 1000 * 60 * 60 * 24 * 90; // +/- 90 days
+            timeline.setWindow(new Date(+now - span), new Date(+now + span), {{ animation: true }});
+            timeline.moveTo(now, {{ animation: true }});
+          }});
+          document.getElementById('btn-zoom-in').addEventListener('click',  () => timeline.zoomIn(0.5));
+          document.getElementById('btn-zoom-out').addEventListener('click', () => timeline.zoomOut(0.5));
+
+          // Wheel behavior:
+          //  - default wheel: bubble -> page scrolls
+          //  - Shift + wheel: horizontal pan (prevent page scroll)
+          //  - Ctrl  + wheel: zoom (handled by vis via zoomKey, but we prevent page zoom)
+          function attachWheelHandlers(el) {{
+            el.addEventListener('wheel', (e) => {{
+              if (e.shiftKey) {{
+                e.preventDefault();
+                const w = timeline.getWindow();
+                const span = w.end - w.start;
+                const shift = span * 0.15 * Math.sign(e.deltaY);
+                timeline.setWindow(new Date(+w.start + shift), new Date(+w.end + shift));
+              }} else if (e.ctrlKey) {{
+                e.preventDefault();
+                if (e.deltaY < 0) timeline.zoomIn(0.5); else timeline.zoomOut(0.5);
+              }} else {{
+                // do nothing -> page scrolls
+              }}
+            }}, {{ passive:false }});
+          }}
+
+          // Attach to the main center panel (not just the outer container)
+          function hookPanels() {{
+            const center = container.querySelector('.vis-panel.vis-center');
+            if (center) attachWheelHandlers(center);
+          }
+          hookPanels();
+          // re-hook after redraws
+          timeline.on('changed', hookPanels);
+
+          // Initial view
+          showToday();
+          fitToData();
         </script>
       </body>
     </html>
     """
-    components.html(html, height=height_px + 100, scrolling=False)
+
+    # Give the outer iframe enough room for toolbar + timeline
+    components.html(html, height=height_px + 110, scrolling=False)
