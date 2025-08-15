@@ -2,8 +2,11 @@ import json
 from datetime import date, timedelta
 import streamlit.components.v1 as components
 
+# CDN assets
 _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
+# Google Fonts: Montserrat
+_FONT = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
 
 def render_timeline(items, groups):
     rows = max(1, len(groups))
@@ -27,16 +30,41 @@ def render_timeline(items, groups):
 <html>
   <head>
     <meta charset="utf-8"/>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="{_FONT}" rel="stylesheet">
     <link rel="stylesheet" href="{_VIS_CSS}"/>
     <style>
+      :root {{
+        --font: 'Montserrat', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, sans-serif;
+      }}
+      body, #timeline, .toolbar, .vis-timeline, .vis-panel, .vis-label, .vis-time-axis, .vis-item, .vis-item-content {{
+        font-family: var(--font);
+      }}
+
       #timeline {{ height:{height_px}px; background:#fff; border-radius:14px; border:1px solid #e7e9f2}}
       .row-bg {{ background: rgba(37,99,235,.05) }}
+
+      /* Axis (years / months) */
+      .vis-time-axis .text {{
+        font-size:12px;
+        font-weight:500;
+      }}
+
+      /* Group labels (categories) */
+      .vis-labelset .vis-label .vis-inner {{
+        font-weight:600;
+      }}
+
       .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
-      .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
+      .toolbar button {{
+        padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer
+      }}
       .toolbar button:hover {{ background:#f3f4f6 }}
+
+      /* Item content with subtitle */
       .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
       .itm .ttl {{ font-weight:600 }}
-      .itm .sub {{ font-size:12px; opacity:.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
+      .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
     </style>
   </head>
   <body>
@@ -70,6 +98,8 @@ def render_timeline(items, groups):
         showCurrentTime: true,
         orientation: 'top',
         margin: {{ item: 8, axis: 12 }},
+
+        // Render title + subtitle for items (skip background items)
         template: function (item) {{
           if (item.type === 'background') return '';
           const title = item.content ? `<div class="ttl">${{escapeHtml(item.content)}}</div>` : '';
@@ -90,8 +120,10 @@ def render_timeline(items, groups):
         timeline.moveTo(now, {{ animation: true }});
       }};
 
+      // Initial fit after layout paints
       setTimeout(fit, 50);
 
+      // Smooth trackpad/mouse horizontal wheel (hold Shift to zoom)
       function attachWheel(el) {{
         el.addEventListener('wheel', (e) => {{
           if (!e.shiftKey || e.deltaY === 0) return;
