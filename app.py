@@ -133,6 +133,43 @@ with st.sidebar:
         removed = st.session_state["groups"].pop()
         st.warning(f'Removed “{removed["id"]}”.')
 
+
+    st.divider()
+    st.header("📂 Export / Import JSON")
+
+    # Export JSON
+    if st.button("⬇️ Export as JSON"):
+        export_data = {
+            "items": st.session_state["items"],
+            "groups": st.session_state["groups"]
+        }
+        st.download_button(
+            label="Download roadmap.json",
+            data=json.dumps(export_data, indent=2, default=str),
+            file_name="roadmap.json",
+            mime="application/json"
+        )
+
+    # Import JSON
+    uploaded_json = st.file_uploader("Import JSON", type="json")
+    if uploaded_json is not None:
+        try:
+            imported = json.load(uploaded_json)
+            if "items" in imported and "groups" in imported:
+                st.session_state["items"] = [
+                    normalize_item(i) for i in imported.get("items", [])
+                ]
+                st.session_state["groups"] = [
+                    normalize_group(g) for g in imported.get("groups", [])
+                ]
+                st.success("✅ Data imported successfully!")
+                st.experimental_rerun()
+            else:
+                st.error("Invalid JSON format. Must contain 'items' and 'groups'.")
+        except Exception as e:
+            st.error(f"Error reading JSON: {e}")
+
+    
     st.divider()
     if st.button("🔄 Reset data"):
         reset_defaults(st.session_state)
