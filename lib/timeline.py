@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 import streamlit.components.v1 as components
 
 _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
@@ -8,10 +9,13 @@ def render_timeline(items, groups):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
+    # Compute dynamic min date: 1 year ago from today
+    min_date = (date.today() - timedelta(days=365)).isoformat()
+
     # Background rows tint (capped at 2028)
     bg_items = [{
         "id": f"bg-{g['id']}", "group": g["id"],
-        "start": "2000-01-01", "end": "2028-12-31", "type": "background",
+        "start": min_date, "end": "2028-12-31", "type": "background",
         "className": "row-bg"
     } for g in groups]
 
@@ -48,7 +52,7 @@ def render_timeline(items, groups):
         stack: true,
         horizontalScroll: true,
         zoomKey: 'ctrlKey',
-        min: '2000-01-01',
+        min: '{min_date}',
         max: '2028-12-31',
         showCurrentTime: true,
         orientation: 'top',
