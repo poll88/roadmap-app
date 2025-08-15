@@ -18,43 +18,61 @@ if "groups" not in st.session_state:
     st.session_state["groups"] = []
 normalize_state(st.session_state)
 
+# Track selection and active category
 if "active_group_id" not in st.session_state:
     st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
 if "editing_item_id" not in st.session_state:
     st.session_state["editing_item_id"] = ""
 
-# Form state
-def _init_form_defaults():
-    if "form_title" not in st.session_state:     st.session_state["form_title"] = ""
-    if "form_subtitle" not in st.session_state:  st.session_state["form_subtitle"] = ""
-    if "form_start" not in st.session_state:     st.session_state["form_start"] = date.today()
-    if "form_end" not in st.session_state:       st.session_state["form_end"] = date.today()
-    if "form_color_label" not in st.session_state: st.session_state["form_color_label"] = PALETTE_OPTIONS[0]
-
-def iso_to_date(s: str) -> date:
-    if not s: return date.today()
-    return datetime.fromisoformat(s[:10]).date()
-
 # ---------- COLOR PALETTE ----------
 PALETTE = [
-    ("Lavender",  "#E9D5FF"), ("Baby Blue", "#BFDBFE"), ("Mint", "#BBF7D0"),
-    ("Lemon", "#FEF9C3"), ("Peach", "#FDE1D3"), ("Blush", "#FBCFE8"),
-    ("Sky", "#E0F2FE"), ("Mauve", "#F5D0FE"), ("Sage", "#D1FAE5"), ("Sand", "#F5E7C6"),
+    ("Lavender",  "#E9D5FF"),
+    ("Baby Blue", "#BFDBFE"),
+    ("Mint",      "#BBF7D0"),
+    ("Lemon",     "#FEF9C3"),
+    ("Peach",     "#FDE1D3"),
+    ("Blush",     "#FBCFE8"),
+    ("Sky",       "#E0F2FE"),
+    ("Mauve",     "#F5D0FE"),
+    ("Sage",      "#D1FAE5"),
+    ("Sand",      "#F5E7C6"),
 ]
-PALETTE_MAP = {f"{name} ({hex})": hex for name, hex in PALETTE}
+PALETTE_MAP = {f"{name} ({hexcode})": hexcode for name, hexcode in PALETTE}
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
-HEX_TO_LABEL = {v: k for k, v in PALETTE_MAP.items()}
+HEX_TO_LABEL = {hexcode: label for label, hexcode in PALETTE_MAP.items()}
+
+# ---------- Helpers ----------
+def iso_to_date(s: str) -> date:
+    if not s:
+        return date.today()
+    # Accept "YYYY-MM-DD" and "YYYY-MM-DDTHH:MM:SS"
+    return datetime.fromisoformat(s[:10]).date()
+
+def _init_form_defaults():
+    if "form_title" not in st.session_state:
+        st.session_state["form_title"] = ""
+    if "form_subtitle" not in st.session_state:
+        st.session_state["form_subtitle"] = ""
+    if "form_start" not in st.session_state:
+        st.session_state["form_start"] = date.today()
+    if "form_end" not in st.session_state:
+        st.session_state["form_end"] = date.today()
+    if "form_color_label" not in st.session_state:
+        st.session_state["form_color_label"] = PALETTE_OPTIONS[0]
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
     st.header("📅 Add / Edit")
 
-    # Categories (groups) with active logic
+    # Create / activate categories (groups)
     group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
     new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
 
+    # If existing name is typed, switch active
     if new_group_name and new_group_name in group_names:
         st.session_state["active_group_id"] = group_names[new_group_name]
+
+    # If new name, create and make active
     if new_group_name and new_group_name not in group_names:
         g = normalize_group({"content": new_group_name, "order": len(st.session_state["groups"])})
         st.session_state["groups"].append(g)
@@ -62,17 +80,18 @@ with st.sidebar:
         st.session_state["active_group_id"] = g["id"]
 
     active_name = next((g["content"] for g in st.session_state["groups"]
-                        if g["id"] == st.session_state.get("active_group_id","")), "(none)")
+                        if g["id"] == st.session_state.get("active_group_id", "")), "(none)")
     st.caption(f"Active category: **{active_name or '(none)'}**")
 
+    # Form state (prefilled when selecting on timeline)
     _init_form_defaults()
 
     colA, colB = st.columns(2)
-    start = colA.date_input("Start", value=st.session_state["form_start"], key="form_start")
-    end   = colB.date_input("End",   value=st.session_state["form_end"],   key="form_end")
+    start = colA.date_input("Start", value=st.session_state.get("form_start") or date.today(), key="form_start")
+    end   = colB.date_input("End",   value=st.session_state.get("form_end")   or date.today(), key="form_end")
     start, end = ensure_range(start, end)
 
-    content  = st.text_input("Title",               value=st.session_state["form_title"],    key="form_title",  placeholder="Item title")
+    content  = st.text_input("Title",               value=st.session_state["form_title"],    key="form_title",    placeholder="Item title")
     subtitle = st.text_input("Subtitle (optional)", value=st.session_state["form_subtitle"], key="form_subtitle", placeholder="Short note")
 
     color_label = st.selectbox(
@@ -92,9 +111,13 @@ with st.sidebar:
         if add_clicked:
             gid = st.session_state.get("active_group_id", "")
             item = normalize_item({
-                "content": content, "subtitle": subtitle,
-                "start": start, "end": end, "group": gid, "color": color_hex,
-                "style": f"background:{color_hex}; border-color:{color_hex}"
+                "content": content,
+                "subtitle": subtitle,
+                "start": start,
+                "end": end,
+                "group": gid,
+                "color": color_hex,
+                "style": f"background:{color_hex}; border-color:{color_hex}",
             })
             st.session_state["items"].append(item)
             st.session_state["editing_item_id"] = item["id"]
@@ -109,12 +132,14 @@ with st.sidebar:
                 for idx, it in enumerate(st.session_state["items"]):
                     if str(it.get("id")) == str(eid):
                         updated = normalize_item({
-                            "id": eid,
-                            "content": content, "subtitle": subtitle,
-                            "start": start, "end": end,
-                            "group": st.session_state.get("active_group_id", it.get("group","")),
+                            "id": eid,  # preserve ID
+                            "content": content,
+                            "subtitle": subtitle,
+                            "start": start,
+                            "end": end,
+                            "group": st.session_state.get("active_group_id", it.get("group", "")),
                             "color": color_hex,
-                            "style": f"background:{color_hex}; border-color:{color_hex}"
+                            "style": f"background:{color_hex}; border-color:{color_hex}",
                         })
                         st.session_state["items"][idx] = updated
                         st.success("Item updated.")
@@ -123,56 +148,4 @@ with st.sidebar:
     st.divider()
     st.subheader("🧰 Utilities")
     if st.button("Reset (clear all)", type="secondary"):
-        reset_defaults(st.session_state)
-        st.session_state["editing_item_id"] = ""
-        st.rerun()
-
-    exported = export_items_groups(st.session_state)
-    st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
-
-    uploaded = st.file_uploader("Import JSON", type=["json"])
-    if uploaded:
-        try:
-            import json
-            payload = json.loads(uploaded.read().decode("utf-8"))
-            st.session_state["items"] = [normalize_item(x) for x in payload.get("items", [])]
-            st.session_state["groups"] = [normalize_group(x) for x in payload.get("groups", [])]
-            st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
-            st.session_state["editing_item_id"] = ""
-            st.success("Imported.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Import failed: {e}")
-
-# ---------- MAIN ----------
-st.title("Roadmap Timeline")
-
-if not st.session_state["items"]:
-    st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
-else:
-    # Filters (optional)
-    selected_names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]])
-    selected_ids = {g["id"] for g in st.session_state["groups"] if g["content"] in selected_names} if selected_names else set()
-    items_view = [i for i in st.session_state["items"] if not selected_ids or i.get("group","") in selected_ids]
-    groups_view = [normalize_group(g) for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
-
-    # Render timeline and capture selection (pass the currently selected id for pre-highlight)
-    selection = render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id",""), key="timeline")
-
-    # When a selection arrives from timeline, update the sidebar form
-    if isinstance(selection, dict) and selection.get("type") == "select" and selection.get("item"):
-        itm = selection["item"]
-        if itm.get("type") != "background":
-            st.session_state["editing_item_id"] = str(itm.get("id"))
-            st.session_state["form_title"] = itm.get("content","")
-            st.session_state["form_subtitle"] = itm.get("subtitle","")
-            st.session_state["form_start"] = iso_to_date(itm.get("start",""))
-            st.session_state["form_end"]   = iso_to_date(itm.get("end",""))
-            # adopt item's group as active
-            gid = str(itm.get("group",""))
-            if gid:
-                st.session_state["active_group_id"] = gid
-            # adopt color
-            label = HEX_TO_LABEL.get(itm.get("color",""), PALETTE_OPTIONS[0])
-            st.session_state["form_color_label"] = label
-            st.rerun()
+        reset_defaults
