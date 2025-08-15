@@ -40,20 +40,12 @@ def reset_defaults(state):
     state["groups"] = []
 
 def ensure_range(start: date, end: date) -> Tuple[date, date]:
-    if end < start: start, end = end, start
-    if end == start: end = start + timedelta(days=1)
+    if end < start:
+        start, end = end, start
+    if end == start:
+        end = start + timedelta(days=1)
     return start, end
 
-# --- Import / Export ---
 def export_items_groups(state) -> str:
     payload = {"items": state.get("items", []), "groups": state.get("groups", [])}
     return json.dumps(payload, indent=2, default=str)
-
-def import_items_groups(state, raw_json: str):
-    try:
-        data = json.loads(raw_json)
-        items, groups = normalize_state(data.get("items", []), data.get("groups", []))
-        state["items"], state["groups"] = items, groups
-        return True, None
-    except Exception as e:
-        return False, str(e)
