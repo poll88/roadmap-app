@@ -1,51 +1,60 @@
-import json
-import uuid
-from datetime import date, timedelta
+import json, uuid
+from datetime import date, timedelta, datetime
 from typing import Any, Dict, List, Tuple
 
 def iso(x: Any) -> str:
-    return x.isoformat() if hasattr(x, "isoformat") else str(x or "")
+    if isinstance(x, (date, datetime)): return x.date().isoformat() if isinstance(x, datetime) else x.isoformat()
+    if isinstance(x, str): return x[:10]
+    return ""
+
+def _coerce_date(s: Any) -> date:
+    if isinstance(s, date): return s
+    if isinstance(s, str) and s: return date.fromisoformat(s[:10])
+    return date.today()
 
 def normalize_item(it: Any) -> Dict[str, Any]:
-    if not isinstance(it, dict): it = {}
+    it = it or {}
+    s = _coerce_date(it.get("start"))
+    e = _coerce_date(it.get("end"))
+    s, e = ensure_range(s, e)
     return {
         "id": str(it.get("id") or uuid.uuid4()),
-        "content": str(it.get("content", "")),
-        "subtitle": str(it.get("subtitle", "")),
-        "status": str(it.get("status","")),
-        "start": iso(it.get("start","")),
-        "end": iso(it.get("end","")),
-        "group": str(it.get("group","")),
-        "title": str(it.get("title","")),
-        "color": str(it.get("color","#5ac8fa")),
-        "style": str(it.get("style","")),
+        "content": str(it.get("content", "")).strip(),
+        "subtitle": str(it.get("subtitle", "")).strip(),
+        "status": str(it.get("status", "")).strip(),
+        "start": iso(s),
+        "end": iso(e),
+        "group": str(it.get("group", "")),
+        "className": str(it.get("className", "")),
+        "style": str(it.get("style", "")),
+        "title": str(it.get("title", "")),
+        "color": str(it.get("color", "#2563eb")),
+        "type": "range",
     }
 
 def normalize_group(g: Any) -> Dict[str, Any]:
-    if not isinstance(g, dict): g = {}
-    gid = g.get("id") or g.get("content") or ""
-    return {"id": str(gid), "content": str(g.get("content", gid)), "laneColor": str(g.get("laneColor","rgba(37,99,235,.06)"))}
+    g = g or {}
+    return {
+        "id": str(g.get("id") or uuid.uuid4()),
+        "content": str(g.get("content", "")).strip() or "Group",
+        "order": int(g.get("order", 0)),
+    }
 
-def _as_list(x: Any) -> List[Any]:
-    if isinstance(x, list): return x
-    return []
-
-def normalize_state(items_any: Any, groups_any: Any):
-    items = [normalize_item(i) for i in _as_list(items_any)]
-    groups = [normalize_group(g) for g in _as_list(groups_any)]
-    return items, groups
+def normalize_state(state):
+    state.setdefault("items", [])
+    state.setdefault("groups", [])
+    state["items"] = [normalize_item(x) for x in state["items"]]
+    state["groups"] = [normalize_group(x) for x in state["groups"]]
 
 def reset_defaults(state):
     state["items"] = []
     state["groups"] = []
 
 def ensure_range(start: date, end: date) -> Tuple[date, date]:
-    if end < start:
-        start, end = end, start
-    if end == start:
-        end = start + timedelta(days=1)
+    if end < start: start, end = end, start
+    if end == start: end = start + timedelta(days=1)
     return start, end
 
 def export_items_groups(state) -> str:
     payload = {"items": state.get("items", []), "groups": state.get("groups", [])}
-    return json.dumps(payload, indent=2, default=str)
+    return json.dumps(payload, indent=2, ensure_ascii=False)
