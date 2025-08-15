@@ -9,7 +9,7 @@ def render_timeline(items, groups):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
-    # Compute dynamic min date: 1 year ago from today
+    # Dynamic min date: at most 1 year ago
     min_date = (date.today() - timedelta(days=365)).isoformat()
 
     # Background rows tint (capped at 2028)
@@ -34,6 +34,11 @@ def render_timeline(items, groups):
       .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
       .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
       .toolbar button:hover {{ background:#f3f4f6 }}
+
+      /* Item content with subtitle */
+      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
+      .itm .ttl {{ font-weight:600 }}
+      .itm .sub {{ font-size:12px; opacity:.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
     </style>
   </head>
   <body>
@@ -48,6 +53,17 @@ def render_timeline(items, groups):
       const items = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
+
+      // Safe text escaping for HTML
+      function escapeHtml(s) {{
+        return String(s ?? "")
+          .replace(/&/g,'&amp;')
+          .replace(/</g,'&lt;')
+          .replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;')
+          .replace(/'/g,'&#39;');
+      }}
+
       const options = {{
         stack: true,
         horizontalScroll: true,
@@ -57,7 +73,16 @@ def render_timeline(items, groups):
         showCurrentTime: true,
         orientation: 'top',
         margin: {{ item: 8, axis: 12 }},
+
+        // Render title + subtitle for items (skip background items)
+        template: function (item, element, data) {{
+          if (item.type === 'background') return '';
+          const title = item.content ? `<div class="ttl">{'{'}{'}'}</div>`.replace('{{}}', escapeHtml(item.content)) : '';
+          const sub = item.subtitle ? `<div class="sub">{'{'}{'}'}</div>`.replace('{{}}', escapeHtml(item.subtitle)) : '';
+          return `<div class="itm">${{title}}${{sub}}</div>`;
+        }},
       }};
+
       const timeline = new vis.Timeline(container, items, groups, options);
 
       function fit() {{
