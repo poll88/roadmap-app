@@ -11,18 +11,35 @@ from lib.timeline import render_timeline
 st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-# ---------- SESSION ----------
+# ---------- SESSION BOOTSTRAP ----------
 if "items" not in st.session_state:
     st.session_state["items"] = []
 if "groups" not in st.session_state:
     st.session_state["groups"] = []
-normalize_state(st.session_state)
-
-# Track selection and active category
 if "active_group_id" not in st.session_state:
     st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
 if "editing_item_id" not in st.session_state:
     st.session_state["editing_item_id"] = ""
+
+# Form defaults (used by sidebar widgets)
+def init_form_defaults():
+    st.session_state.setdefault("form_title", "")
+    st.session_state.setdefault("form_subtitle", "")
+    st.session_state.setdefault("form_start", date.today())
+    st.session_state.setdefault("form_end", date.today())
+    st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
+
+def clear_form_defaults():
+    st.session_state["form_title"] = ""
+    st.session_state["form_subtitle"] = ""
+    st.session_state["form_start"] = date.today()
+    st.session_state["form_end"] = date.today()
+    st.session_state["form_color_label"] = PALETTE_OPTIONS[0]
+
+def iso_to_date(s: str) -> date:
+    if not s:
+        return date.today()
+    return datetime.fromisoformat(s[:10]).date()
 
 # ---------- COLOR PALETTE ----------
 PALETTE = [
@@ -41,31 +58,28 @@ PALETTE_MAP = {f"{name} ({hexcode})": hexcode for name, hexcode in PALETTE}
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
 HEX_TO_LABEL = {hexcode: label for label, hexcode in PALETTE_MAP.items()}
 
-# ---------- Helpers ----------
-def iso_to_date(s: str) -> date:
-    if not s:
-        return date.today()
-    return datetime.fromisoformat(s[:10]).date()
+# ---------- PROCESS PENDING ACTIONS (before any widgets are created!) ----------
+# Use flags set by button handlers to perform destructive changes safely
+if st.session_state.get("_pending_delete_id"):
+    eid = st.session_state.pop("_pending_delete_id")
+    st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
+    st.session_state["editing_item_id"] = ""
+    clear_form_defaults()
 
-def init_form_defaults():
-    st.session_state.setdefault("form_title", "")
-    st.session_state.setdefault("form_subtitle", "")
-    st.session_state.setdefault("form_start", date.today())
-    st.session_state.setdefault("form_end", date.today())
-    st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
+if st.session_state.get("_pending_reset"):
+    st.session_state.pop("_pending_reset")
+    reset_defaults(st.session_state)
+    st.session_state["editing_item_id"] = ""
+    clear_form_defaults()
 
-def clear_form():
-    st.session_state["form_title"] = ""
-    st.session_state["form_subtitle"] = ""
-    st.session_state["form_start"] = date.today()
-    st.session_state["form_end"] = date.today()
-    st.session_state["form_color_label"] = PALETTE_OPTIONS[0]
+# Normalize after any pending mutations
+normalize_state(st.session_state)
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
     st.header("📅 Add / Edit")
 
-    # Category (group) management with "active" logic
+    # Category management (+ active category)
     group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
     new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
 
@@ -81,13 +95,13 @@ with st.sidebar:
                         if g["id"] == st.session_state.get("active_group_id","")), "(none)")
     st.caption(f"Active category: **{active_name or '(none)'}**")
 
-    # One FORM to prevent reruns on each keystroke (keeps focus while typing)
+    # Single form to keep focus while typing
     init_form_defaults()
     with st.form("item_form", clear_on_submit=False):
         colA, colB = st.columns(2)
         start = colA.date_input("Start", key="form_start")
         end   = colB.date_input("End",   key="form_end")
-        start, end = ensure_range(start, end)  # guards partial inputs
+        start, end = ensure_range(start, end)
 
         content  = st.text_input("Title",               key="form_title",    placeholder="Item title")
         subtitle = st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
@@ -99,7 +113,7 @@ with st.sidebar:
         edit_clicked   = col2.form_submit_button("✏️ Edit item")
         delete_clicked = col3.form_submit_button("🗑 Delete item")
 
-    # Actions after submit (so they run only on button click)
+    # -------- Actions (set flags, then rerun) --------
     if add_clicked:
         color_hex = PALETTE_MAP[st.session_state["form_color_label"]]
         gid = st.session_state.get("active_group_id","")
@@ -144,19 +158,15 @@ with st.sidebar:
         if not eid:
             st.warning("Select an item on the timeline to delete.")
         else:
-            # Remove item and clear selection + form
-            st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
-            st.session_state["editing_item_id"] = ""
-            clear_form()
-            st.success("Item deleted.")
+            # mark deletion for next run (before widgets render), then rerun
+            st.session_state["_pending_delete_id"] = eid
             st.rerun()
 
     st.divider()
     st.subheader("🧰 Utilities")
     if st.button("Reset (clear all)", type="secondary"):
-        reset_defaults(st.session_state)
-        st.session_state["editing_item_id"] = ""
-        clear_form()
+        # mark reset for next run, then rerun
+        st.session_state["_pending_reset"] = True
         st.rerun()
 
     exported = export_items_groups(st.session_state)
@@ -170,7 +180,7 @@ with st.sidebar:
         st.session_state["groups"] = [normalize_group(x) for x in payload.get("groups", [])]
         st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
         st.session_state["editing_item_id"] = ""
-        clear_form()
+        # No need to clear form; keep current inputs
         st.success("Imported.")
         st.rerun()
 
@@ -187,29 +197,25 @@ else:
     items_view  = [i for i in st.session_state["items"]  if not selected_ids or i.get("group","") in selected_ids]
     groups_view = [normalize_group(g) for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
 
-    # Render timeline
     selection = render_timeline(
         items_view,
         groups_view,
         selected_id=st.session_state.get("editing_item_id","")
     )
 
-    # Update sidebar dynamically when clicking a timeline item
+    # Update sidebar when clicking a timeline item (safe rerun only when changed)
     if isinstance(selection, dict) and selection.get("type") == "select" and selection.get("item"):
         itm = selection["item"]
         if itm.get("type") != "background":
             sel_id = str(itm.get("id"))
-            # Only update/rerun if the selection actually changed (prevents rerun loops)
             if sel_id != st.session_state.get("editing_item_id",""):
                 st.session_state["editing_item_id"] = sel_id
                 st.session_state["form_title"] = itm.get("content","")
                 st.session_state["form_subtitle"] = itm.get("subtitle","")
                 st.session_state["form_start"] = iso_to_date(itm.get("start",""))
                 st.session_state["form_end"]   = iso_to_date(itm.get("end",""))
-                # adopt item's group as active
                 gid = str(itm.get("group",""))
                 if gid:
                     st.session_state["active_group_id"] = gid
-                # adopt color if known
                 st.session_state["form_color_label"] = HEX_TO_LABEL.get(itm.get("color",""), st.session_state["form_color_label"])
                 st.rerun()
