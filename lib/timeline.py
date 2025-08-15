@@ -2,7 +2,7 @@ import json
 import streamlit.components.v1 as components
 
 def render_timeline(items, groups):
-    # Only drag/resize inline; no delete/add buttons
+    # Only drag/resize in the canvas (no accidental deletes)
     options = {
         "editable": {"add": False, "remove": False, "updateGroup": True, "updateTime": True},
         "stack": True,
@@ -17,7 +17,7 @@ def render_timeline(items, groups):
         "zoomMax": 1000 * 60 * 60 * 24 * 365 * 4
     }
 
-    # Background “lane” items to tint each category row
+    # Lane backgrounds
     bg_items = [{
         "id": f"bg-{g['id']}",
         "group": g["id"],
@@ -27,15 +27,15 @@ def render_timeline(items, groups):
         "className": f"lane-{g['id']}"
     } for g in groups]
 
-    # Style each item as a rounded glossy pill (subtitle on its own line)
+    # Styled bars (pills)
     styled = []
     for it in items:
         base = it.get("color", "#5ac8fa")
         style = (
             f"background: linear-gradient(180deg,{base} 0%, {base}cc 100%);"
-            "border:none;color:#0f172a;border-radius:20px;box-shadow:0 2px 6px rgba(0,0,0,.08);"
-            "padding:8px 12px;min-height:44px;display:flex;align-items:flex-start;"
-            "overflow:visible;"
+            "border:none;color:#0f172a;border-radius:22px;box-shadow:0 2px 6px rgba(0,0,0,.08);"
+            # allow two text lines (title + subtitle)
+            "padding:6px 12px;display:flex;align-items:flex-start;gap:8px;min-height:42px;"
         )
         styled.append({**it, "style": style})
 
@@ -44,7 +44,7 @@ def render_timeline(items, groups):
     <head>
       <meta charset="utf-8" />
       <!-- Modern font -->
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
       <link href="https://unpkg.com/vis-timeline@7.7.0/styles/vis-timeline-graph2d.min.css" rel="stylesheet"/>
       <script src="https://unpkg.com/vis-data@7.1.6/peer/umd/vis-data.min.js"></script>
       <script src="https://unpkg.com/vis-timeline@7.7.0/standalone/umd/vis-timeline-graph2d.min.js"></script>
@@ -56,24 +56,21 @@ def render_timeline(items, groups):
         .btn {{ padding:7px 12px; border:1px solid #d1d5db; border-radius:10px; background:#fff; cursor:pointer; font-size:13px }}
         .btn:hover {{ background:#f3f4f6; }}
 
-        /* Left category column width + fonts */
+        /* Left labels (categories) */
         .vis-panel.vis-left {{ width: 240px !important; }}
-        .vis-labelset .vis-label {{ font-weight: 700; color:#0f172a; font-family: 'Inter', sans-serif; font-size:14px; }}
+        .vis-labelset .vis-label {{ font-weight: 700; color:#0f172a; font-family: 'Inter', sans-serif; }}
 
-        /* Axis fonts (months/years) */
-        .vis-time-axis .vis-text {{ color:#111827; font-family:'Inter',sans-serif; font-size:12.5px; }}
+        /* Axis (year/month) */
+        .vis-time-axis .vis-text {{ color:#111827; font-family: 'Inter', sans-serif; font-size: 12.5px; }}
 
-        /* Item composition */
-        .vis-item .pill {{ display:flex; flex-direction:column; gap:2px; line-height:1.1; }}
-        .vis-item .title {{ font-weight:700; font-size:13.5px; }}
-        .vis-item .subtitle {{ font-size:12px; color:#374151; opacity:.95; }}
-        .vis-item .status {{ margin-left:8px; font-weight:600; background:#0ea5e9; color:#fff;
-                             padding:2px 8px; border-radius:999px; font-size:10px; display:inline-block; }}
-
-        /* Rounded lane backgrounds */
+        /* Two-line content inside bars */
+        .vis-item .title {{ font-weight:700; font-size:13px; line-height:1.15; display:block; }}
+        .vis-item .subtitle {{ display:block; font-size:12px; color:#334155; opacity:.95; line-height:1.1; margin-top:2px; }}
+        .vis-item .status {{ margin-left:8px; font-weight:600; background: #0ea5e9; color:#fff;
+                             padding:2px 8px; border-radius:999px; font-size:10px; height:18px; align-self:flex-start; }}
         .vis-item.vis-background {{ border-radius:16px; }}
 
-        /* Just in case: hide built-in delete handles */
+        /* Hide built-in delete handle */
         .vis-delete {{ display:none !important; }}
       </style>
     </head>
@@ -85,33 +82,32 @@ def render_timeline(items, groups):
       <div id="tl"></div>
 
       <script>
-        const itemsData  = new vis.DataSet({json.dumps(styled)});
-        const groupsData = new vis.DataSet({json.dumps(groups)});
-        const bgData     = new vis.DataSet({json.dumps(bg_items)});
-
-        const container = document.getElementById('tl');
-        const timeline  = new vis.Timeline(
+        const itemsData   = new vis.DataSet({json.dumps(styled)});
+        const groupsData  = new vis.DataSet({json.dumps(groups)});
+        const bgData      = new vis.DataSet({json.dumps(bg_items)});
+        const container   = document.getElementById('tl');
+        const timeline    = new vis.Timeline(
           container,
           new vis.DataSet([...bgData.get(), ...itemsData.get()]),
           groupsData,
           {json.dumps(options)}
         );
 
-        // Item template: title + (optional) status pill + subtitle (new line)
+        // Custom HTML content (title, optional status pill, subtitle)
         timeline.setOptions({{
           template: function (item, element, data) {{
             if (!item || item.type === 'background') return '';
-            const title = item.content || '';
-            const status = item.status ? `<span class="status">${{item.status}}</span>` : '';
+            const title = item.content ? `<span class="title">${{item.content}}</span>` : '';
             const sub = item.subtitle ? `<span class="subtitle">${{item.subtitle}}</span>` : '';
-            return `<div class="pill"><span class="title">${{title}}</span>${{status}}${{sub}}</div>`;
+            const status = item.status ? `<span class="status">${{item.status}}</span>` : '';
+            return `${{title}}${{status}}${{sub}}`;
           }}
         }});
 
-        // Lane tints (category backgrounds)
-        const styleEl = document.createElement('style');
-        styleEl.innerHTML = {json.dumps("".join([f".lane-{g['id']}{{ background:{g['laneColor']}; }} " for g in groups]))};
-        document.head.appendChild(styleEl);
+        // lane tints
+        const s = document.createElement('style');
+        s.innerHTML = {json.dumps("".join([f".lane-{g['id']}{{ background:{g['laneColor']}; }} " for g in groups]))};
+        document.head.appendChild(s);
 
         // Today marker
         function addToday() {{
