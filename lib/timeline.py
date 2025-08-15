@@ -6,7 +6,7 @@ _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.c
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
 _FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
 
-def render_timeline(items, groups, selected_id: str = "", key: str = "timeline"):
+def render_timeline(items, groups, selected_id: str = ""):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
@@ -159,4 +159,4 @@ def render_timeline(items, groups, selected_id: str = "", key: str = "timeline")
 </html>
     """
     # Return selection payload to Python (requires Streamlit >= 1.29 to capture values from components.html)
-    return components.html(html, height=height_px + 80, scrolling=False, key=key)
+    return components.html(html, height=height_px + 80, scrolling=False)
