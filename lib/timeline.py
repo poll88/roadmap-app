@@ -8,10 +8,10 @@ def render_timeline(items, groups):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
-    # Background rows tint
+    # Background rows tint (capped at 2028)
     bg_items = [{
         "id": f"bg-{g['id']}", "group": g["id"],
-        "start": "2000-01-01", "end": "2100-01-01", "type": "background",
+        "start": "2000-01-01", "end": "2028-12-31", "type": "background",
         "className": "row-bg"
     } for g in groups]
 
@@ -49,7 +49,7 @@ def render_timeline(items, groups):
         horizontalScroll: true,
         zoomKey: 'ctrlKey',
         min: '2000-01-01',
-        max: '2100-01-01',
+        max: '2028-12-31',
         showCurrentTime: true,
         orientation: 'top',
         margin: {{ item: 8, axis: 12 }},
@@ -69,7 +69,7 @@ def render_timeline(items, groups):
       // Initial fit after layout paints
       setTimeout(fit, 50);
 
-      // Smooth trackpad/mouse horizontal wheel
+      // Smooth trackpad/mouse horizontal wheel (hold Shift to zoom)
       function attachWheel(el) {{
         el.addEventListener('wheel', (e) => {{
           if (!e.shiftKey || e.deltaY === 0) return;
