@@ -20,6 +20,10 @@ if "groups" not in st.session_state:
     st.session_state["groups"] = []
 normalize_state(st.session_state)
 
+# Track the currently active category (used when adding items)
+if "active_group_id" not in st.session_state:
+    st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
+
 # ---------- COLOR PALETTE ----------
 PALETTE = [
     ("Lavender",  "#E9D5FF"),
@@ -43,10 +47,22 @@ with st.sidebar:
     # Create categories (groups)
     group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
     new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
+
+    # If user types an existing name, switch active group to it
+    if new_group_name and new_group_name in group_names:
+        st.session_state["active_group_id"] = group_names[new_group_name]
+
+    # If user types a new name, create it and make it active
     if new_group_name and new_group_name not in group_names:
         g = normalize_group({"content": new_group_name, "order": len(st.session_state["groups"])})
         st.session_state["groups"].append(g)
         group_names[new_group_name] = g["id"]
+        st.session_state["active_group_id"] = g["id"]
+
+    # Show which category is active (no selector UI)
+    active_name = next((g["content"] for g in st.session_state["groups"]
+                        if g["id"] == st.session_state.get("active_group_id","")), "(none)")
+    st.caption(f"Active category: **{active_name or '(none)'}**")
 
     colA, colB = st.columns(2)
     start = colA.date_input("Start", value=date.today())
@@ -59,11 +75,11 @@ with st.sidebar:
     color_label = st.selectbox("Bar color", PALETTE_OPTIONS, index=0)
     color_hex = PALETTE_MAP[color_label]
 
-    # Add item form (auto-assigns to first category if any exist)
+    # Add item form (assign to active category if any)
     with st.form("add_item_form", clear_on_submit=True):
         submitted = st.form_submit_button("➕ Add item")
         if submitted:
-            gid = next(iter(group_names.values()), "")  # auto-assign or ungrouped
+            gid = st.session_state.get("active_group_id", "")  # use active category
             item = normalize_item({
                 "content": content, "subtitle": subtitle,
                 "start": start, "end": end, "group": gid, "color": color_hex,
@@ -90,6 +106,8 @@ with st.sidebar:
             groups = [normalize_group(x) for x in payload.get("groups", [])]
             st.session_state["items"] = items
             st.session_state["groups"] = groups
+            # Keep active group as the last one after import (if any)
+            st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
             st.success("Imported.")
             st.experimental_rerun()
         except Exception as e:
