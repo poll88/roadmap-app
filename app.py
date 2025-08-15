@@ -24,6 +24,7 @@ normalize_state(st.session_state)
 with st.sidebar:
     st.header("📅 Add / Edit")
 
+    # Create categories (groups). No "Category to assign" selector anymore.
     group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
     new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
     if new_group_name and new_group_name not in group_names:
@@ -40,12 +41,12 @@ with st.sidebar:
     subtitle = st.text_input("Subtitle (optional)", placeholder="Short note")
     status = st.selectbox("Status", ["", "Planned", "In Progress", "Blocked", "Done"])
     color = st.color_picker("Bar color", "#2563EB")
-    group_choice = st.selectbox("Category to assign", list(group_names.keys()) or ["(no groups yet)"])
 
+    # Add item form (auto-assigns to first category if any exist)
     with st.form("add_item_form", clear_on_submit=True):
         submitted = st.form_submit_button("➕ Add item")
         if submitted:
-            gid = group_names.get(group_choice, "")
+            gid = next(iter(group_names.values()), "")  # auto-assign or ungrouped
             item = normalize_item({
                 "content": content, "subtitle": subtitle, "status": status,
                 "start": start, "end": end, "group": gid, "color": color,
@@ -82,7 +83,7 @@ st.title("Roadmap Timeline")
 if not st.session_state["items"]:
     st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
 else:
-    # Filter by selected categories (optional)
+    # Optional filter by categories
     selected_names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]])
     selected_ids = {g["id"] for g in st.session_state["groups"] if g["content"] in selected_names} if selected_names else set()
 
