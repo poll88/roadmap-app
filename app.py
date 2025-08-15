@@ -24,7 +24,7 @@ normalize_state(st.session_state)
 with st.sidebar:
     st.header("📅 Add / Edit")
 
-    # Create categories (groups). No "Category to assign" selector anymore.
+    # Create categories (groups)
     group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
     new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
     if new_group_name and new_group_name not in group_names:
@@ -39,7 +39,6 @@ with st.sidebar:
 
     content = st.text_input("Title", placeholder="Item title")
     subtitle = st.text_input("Subtitle (optional)", placeholder="Short note")
-    status = st.selectbox("Status", ["", "Planned", "In Progress", "Blocked", "Done"])
     color = st.color_picker("Bar color", "#2563EB")
 
     # Add item form (auto-assigns to first category if any exist)
@@ -48,7 +47,7 @@ with st.sidebar:
         if submitted:
             gid = next(iter(group_names.values()), "")  # auto-assign or ungrouped
             item = normalize_item({
-                "content": content, "subtitle": subtitle, "status": status,
+                "content": content, "subtitle": subtitle,
                 "start": start, "end": end, "group": gid, "color": color,
                 "style": f"background:{color}; border-color:{color}"
             })
