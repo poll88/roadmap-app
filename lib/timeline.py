@@ -40,28 +40,13 @@ def render_timeline(items, groups):
       body, #timeline, .toolbar, .vis-timeline, .vis-panel, .vis-label, .vis-time-axis, .vis-item, .vis-item-content {{
         font-family: var(--font);
       }}
-
       #timeline {{ height:{height_px}px; background:#fff; border-radius:14px; border:1px solid #e7e9f2}}
       .row-bg {{ background: rgba(37,99,235,.05) }}
-
-      /* Axis (years / months) */
-      .vis-time-axis .text {{
-        font-size:12px;
-        font-weight:500;
-      }}
-
-      /* Group labels (categories) */
-      .vis-labelset .vis-label .vis-inner {{
-        font-weight:600;
-      }}
-
+      .vis-time-axis .text {{ font-size:12px; font-weight:500; }}
+      .vis-labelset .vis-label .vis-inner {{ font-weight:600; }}
       .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
-      .toolbar button {{
-        padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer
-      }}
+      .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
       .toolbar button:hover {{ background:#f3f4f6 }}
-
-      /* Item content with subtitle */
       .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
       .itm .ttl {{ font-weight:600 }}
       .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
@@ -76,17 +61,17 @@ def render_timeline(items, groups):
 
     <script src="{_VIS_JS}"></script>
     <script>
+      // Streamlit glue
+      function setVal(v) {{ if (window.Streamlit) Streamlit.setComponentValue(v); }}
+
       const items = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
 
       function escapeHtml(s) {{
         return String(s ?? "")
-          .replace(/&/g,'&amp;')
-          .replace(/</g,'&lt;')
-          .replace(/>/g,'&gt;')
-          .replace(/"/g,'&quot;')
-          .replace(/'/g,'&#39;');
+          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
       }}
 
       const options = {{
@@ -98,8 +83,6 @@ def render_timeline(items, groups):
         showCurrentTime: true,
         orientation: 'top',
         margin: {{ item: 8, axis: 12 }},
-
-        // Render title + subtitle for items (skip background items)
         template: function (item) {{
           if (item.type === 'background') return '';
           const title = item.content ? `<div class="ttl">${{escapeHtml(item.content)}}</div>` : '';
@@ -110,9 +93,18 @@ def render_timeline(items, groups):
 
       const timeline = new vis.Timeline(container, items, groups, options);
 
-      function fit() {{
-        try {{ timeline.fit({{ animation: true }}); }} catch(e){{}}
-      }}
+      // Selection -> send selected item to Streamlit
+      timeline.on('select', (props) => {{
+        if (!props || !props.items || props.items.length === 0) {{
+          setVal({{ type: 'select', item: null }});
+          return;
+        }}
+        const id = props.items[0];
+        const itm = items.get(id);
+        setVal({{ type: 'select', item: itm }});
+      }});
+
+      function fit() {{ try {{ timeline.fit({{ animation: true }}); }} catch(e){{}} }}
       document.getElementById('btn-fit').onclick = fit;
 
       document.getElementById('btn-today').onclick = () => {{
@@ -120,7 +112,6 @@ def render_timeline(items, groups):
         timeline.moveTo(now, {{ animation: true }});
       }};
 
-      // Initial fit after layout paints
       setTimeout(fit, 50);
 
       // Smooth trackpad/mouse horizontal wheel (hold Shift to zoom)
@@ -138,4 +129,5 @@ def render_timeline(items, groups):
   </body>
 </html>
     """
-    components.html(html, height=height_px + 80, scrolling=False)
+    # IMPORTANT: return selection payload to Python
+    return components.html(html, height=height_px + 80, scrolling=False)
