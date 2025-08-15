@@ -2,22 +2,25 @@ import json
 import streamlit.components.v1 as components
 
 def render_timeline(items, groups):
-    # Drag/resize only in canvas; no accidental add/remove
+    # ---- computed height (80px per group + header), min 260 ----
+    rows = max(1, len(groups))
+    height_px = max(260, 80 * rows + 120)
+
     options = {
         "editable": {"add": False, "remove": False, "updateGroup": True, "updateTime": True},
         "stack": True,
         "margin": {"item": 14, "axis": 8},
         "orientation": "top",
         "multiselect": True,
-        "zoomKey": None,            # disable ctrl+wheel zoom (we'll use buttons)
-        "zoomable": False,          # prevent wheel zoom entirely
-        "horizontalScroll": True,
-        "timeAxis": {"scale": "month", "step": 1},
-        "height": "auto",           # auto height to fit items
-        "autoResize": True
+        # We'll implement custom wheel behavior; leave zoomable true but controlled by ctrlKey.
+        "zoomKey": "ctrlKey",
+        "zoomable": True,
+        # Disable built-in horizontalScroll so default wheel scrolls the page.
+        "horizontalScroll": False,
+        "timeAxis": {"scale": "month", "step": 1}
     }
 
-    # Lane backgrounds
+    # Lane backgrounds (category tint)
     bg_items = [{
         "id": f"bg-{g['id']}",
         "group": g["id"],
@@ -27,7 +30,7 @@ def render_timeline(items, groups):
         "className": f"lane-{g['id']}"
     } for g in groups]
 
-    # Styled bars (pills) – allow two lines (title + subtitle)
+    # Styled bars with room for two lines
     styled = []
     for it in items:
         base = it.get("color", "#5ac8fa")
@@ -42,7 +45,6 @@ def render_timeline(items, groups):
     <html>
       <head>
         <meta charset="utf-8" />
-        <!-- Modern font -->
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
         <link href="https://unpkg.com/vis-timeline@7.7.0/styles/vis-timeline-graph2d.min.css" rel="stylesheet"/>
         <script src="https://unpkg.com/vis-data@7.1.6/peer/umd/vis-data.min.js"></script>
@@ -51,18 +53,15 @@ def render_timeline(items, groups):
         <style>
           body {{ margin:0; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }}
           #toolbar {{ display:flex; gap:8px; align-items:center; margin: 4px 0 10px; }}
-          #tl {{ border:1px solid #e5e7eb; border-radius:14px; }}
+          #tl {{ border:1px solid #e5e7eb; border-radius:14px; height:{height_px}px; }}
           .btn {{ padding:7px 12px; border:1px solid #d1d5db; border-radius:12px; background:#fff; cursor:pointer; font-size:13px }}
           .btn:hover {{ background:#f3f4f6; }}
 
-          /* Left column (categories) */
           .vis-panel.vis-left {{ width: 240px !important; }}
           .vis-labelset .vis-label {{ font-weight: 700; color:#0f172a; font-family: 'Inter', sans-serif; }}
 
-          /* Axis (year/month) */
           .vis-time-axis .vis-text {{ color:#111827; font-family: 'Inter', sans-serif; font-size: 12.5px; }}
 
-          /* Two-line item content */
           .vis-item-content {{ white-space: normal; }}
           .inner {{ display:flex; flex-direction:column; gap:2px; }}
           .row1 {{ display:flex; align-items:center; gap:8px; }}
@@ -96,7 +95,7 @@ def render_timeline(items, groups):
             {json.dumps(options)}
           );
 
-          // Rich template (title + optional status pill + subtitle)
+          // Template: title + optional status pill + subtitle (2 lines)
           timeline.setOptions({{
             template: function (item) {{
               if (!item || item.type === 'background') return '';
@@ -112,7 +111,7 @@ def render_timeline(items, groups):
           styleEl.innerHTML = {json.dumps("".join([f".lane-{g['id']}{{ background:{g['laneColor']}; }} " for g in groups]))};
           document.head.appendChild(styleEl);
 
-          // Today marker + center/zoom helpers
+          // Today marker + helpers
           function addToday() {{
             const now = new Date();
             if (!timeline.customTimes || !timeline.customTimes.get('today')) {{
@@ -134,10 +133,29 @@ def render_timeline(items, groups):
           addToday();
           centerToToday();
 
+          // ---- Wheel behavior ----
+          // Default: allow wheel to bubble (page scrolls).
+          // Shift + wheel: horizontal pan
+          // Ctrl  + wheel: zoom (handled by Vis via zoomKey='ctrlKey', but we'll ensure smoothness)
+          container.addEventListener('wheel', (e) => {{
+            if (e.shiftKey) {{
+              e.preventDefault();
+              const w = timeline.getWindow();
+              const span = w.end - w.start;
+              const shift = span * 0.15 * Math.sign(e.deltaY); // 15% per notch
+              timeline.setWindow(new Date(+w.start + shift), new Date(+w.end + shift));
+            }} else if (e.ctrlKey) {{
+              // Let vis handle via zoomKey, but prevent page zoom on some browsers
+              e.preventDefault();
+              if (e.deltaY < 0) timeline.zoomIn(0.5); else timeline.zoomOut(0.5);
+            }} else {{
+              // no preventDefault -> page scrolls normally
+            }}
+          }}, {{ passive: false }});
+
           // Buttons
           document.getElementById('today').addEventListener('click', () => {{
-            addToday();
-            centerToToday();
+            addToday(); centerToToday();
           }});
           document.getElementById('export').addEventListener('click', async () => {{
             const canvas = await html2canvas(container, {{backgroundColor: '#ffffff', useCORS: true}});
@@ -152,4 +170,4 @@ def render_timeline(items, groups):
       </body>
     </html>
     """
-    components.html(html, height=700, scrolling=False)
+    components.html(html, height=height_px + 100, scrolling=False)
