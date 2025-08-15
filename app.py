@@ -59,19 +59,6 @@ with st.sidebar:
     color_label = st.selectbox("Bar color", PALETTE_OPTIONS, index=0)
     color_hex = PALETTE_MAP[color_label]
 
-    # Little swatch preview grid (purely visual)
-    st.caption("Palette")
-    sw_cols = st.columns(5)
-    for i, (name, hexv) in enumerate(PALETTE):
-        with sw_cols[i % 5]:
-            st.markdown(
-                f"""<div style="display:flex;align-items:center;gap:6px;margin:.15rem 0">
-                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;border:1px solid #e5e7eb;background:{hexv}"></span>
-                        <span style="font-size:12px">{name}</span>
-                    </div>""",
-                unsafe_allow_html=True
-            )
-
     # Add item form (auto-assigns to first category if any exist)
     with st.form("add_item_form", clear_on_submit=True):
         submitted = st.form_submit_button("➕ Add item")
