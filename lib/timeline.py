@@ -61,9 +61,29 @@ def render_timeline(items, groups):
 
     <script src="{_VIS_JS}"></script>
     <script>
-      // Streamlit glue
-      function setVal(v) {{ if (window.Streamlit) Streamlit.setComponentValue(v); }}
+      // ---- Streamlit glue (robust) ----
+      function setVal(value) {{
+        // Official way (components.html provides Streamlit global on recent Streamlit)
+        if (window.Streamlit && typeof window.Streamlit.setComponentValue === "function") {{
+          window.Streamlit.setComponentValue(value);
+        }}
+        // Fallback for older versions: postMessage to parent
+        try {{
+          window.parent.postMessage({{
+            isStreamlitMessage: true,
+            type: "streamlit:setComponentValue",
+            value
+          }}, "*");
+        }} catch (e) {{}}
+      }}
+      function setHeight(h) {{
+        if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {{
+          window.Streamlit.setFrameHeight(h);
+        }}
+      }}
+      setHeight({height_px + 80});
 
+      // ---- Timeline setup ----
       const items = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
@@ -94,14 +114,23 @@ def render_timeline(items, groups):
       const timeline = new vis.Timeline(container, items, groups, options);
 
       // Selection -> send selected item to Streamlit
-      timeline.on('select', (props) => {{
-        if (!props || !props.items || props.items.length === 0) {{
+      function sendSelection(id) {{
+        if (!id) {{
           setVal({{ type: 'select', item: null }});
           return;
         }}
-        const id = props.items[0];
         const itm = items.get(id);
         setVal({{ type: 'select', item: itm }});
+      }}
+
+      timeline.on('select', (props) => {{
+        const id = (props && props.items && props.items[0]) ? props.items[0] : null;
+        // Ignore background selections
+        if (id && String(id).startsWith('bg-')) {{
+          setVal({{ type: 'select', item: null }});
+        }} else {{
+          sendSelection(id);
+        }}
       }});
 
       function fit() {{ try {{ timeline.fit({{ animation: true }}); }} catch(e){{}} }}
@@ -129,5 +158,5 @@ def render_timeline(items, groups):
   </body>
 </html>
     """
-    # IMPORTANT: return selection payload to Python
+    # Return the selection payload to Python (works when setVal uses the official API)
     return components.html(html, height=height_px + 80, scrolling=False)
