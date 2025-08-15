@@ -149,3 +149,53 @@ with st.sidebar:
     st.subheader("🧰 Utilities")
     if st.button("Reset (clear all)", type="secondary"):
         reset_defaults
+# ---------- MAIN ----------
+st.title("Roadmap Timeline")
+
+if not st.session_state["items"]:
+    st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
+else:
+    # Optional filters
+    selected_names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]])
+    selected_ids = {g["id"] for g in st.session_state["groups"] if g["content"] in selected_names} if selected_names else set()
+
+    items_view  = [i for i in st.session_state["items"]  if not selected_ids or i.get("group", "") in selected_ids]
+    groups_view = [normalize_group(g) for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
+
+    # Render timeline (no key arg)
+    selection = render_timeline(
+        items_view,
+        groups_view,
+        selected_id=st.session_state.get("editing_item_id", "")
+    )
+
+    # ---- SAFE selection handling (no infinite rerun) ----
+    if isinstance(selection, dict) and selection.get("type") == "select" and selection.get("item"):
+        itm = selection["item"]
+        if itm.get("type") != "background":
+            sel_id = str(itm.get("id"))
+            # Only update/rerun if the selection actually changed
+            if sel_id != st.session_state.get("editing_item_id", ""):
+                from datetime import date, datetime
+
+                def iso_to_date(s: str):
+                    if not s: return date.today()
+                    return datetime.fromisoformat(s[:10]).date()
+
+                st.session_state["editing_item_id"] = sel_id
+                st.session_state["form_title"] = itm.get("content", "")
+                st.session_state["form_subtitle"] = itm.get("subtitle", "")
+                st.session_state["form_start"] = iso_to_date(itm.get("start", ""))
+                st.session_state["form_end"]   = iso_to_date(itm.get("end", ""))
+
+                # Adopt item's group as active (if present)
+                gid = str(itm.get("group", ""))
+                if gid:
+                    st.session_state["active_group_id"] = gid
+
+                # Adopt color label if known
+                from itertools import chain
+                # HEX_TO_LABEL must be defined earlier in the file (as in your version)
+                if "HEX_TO_LABEL" in globals():
+                    st.session_state["form_color_label"] = HEX_TO_LABEL.get(itm.get("color", ""), st.session_state.get("form_color_label"))
+                st.rerun()
