@@ -20,6 +20,22 @@ if "groups" not in st.session_state:
     st.session_state["groups"] = []
 normalize_state(st.session_state)
 
+# ---------- COLOR PALETTE ----------
+PALETTE = [
+    ("Lavender",  "#E9D5FF"),
+    ("Baby Blue", "#BFDBFE"),
+    ("Mint",      "#BBF7D0"),
+    ("Lemon",     "#FEF9C3"),
+    ("Peach",     "#FDE1D3"),
+    ("Blush",     "#FBCFE8"),
+    ("Sky",       "#E0F2FE"),
+    ("Mauve",     "#F5D0FE"),
+    ("Sage",      "#D1FAE5"),
+    ("Sand",      "#F5E7C6"),
+]
+PALETTE_MAP = {f"{name} ({hex})": hex for name, hex in PALETTE}
+PALETTE_OPTIONS = list(PALETTE_MAP.keys())
+
 # ---------- SIDEBAR ----------
 with st.sidebar:
     st.header("📅 Add / Edit")
@@ -39,7 +55,22 @@ with st.sidebar:
 
     content = st.text_input("Title", placeholder="Item title")
     subtitle = st.text_input("Subtitle (optional)", placeholder="Short note")
-    color = st.color_picker("Bar color", "#2563EB")
+
+    color_label = st.selectbox("Bar color", PALETTE_OPTIONS, index=0)
+    color_hex = PALETTE_MAP[color_label]
+
+    # Little swatch preview grid (purely visual)
+    st.caption("Palette")
+    sw_cols = st.columns(5)
+    for i, (name, hexv) in enumerate(PALETTE):
+        with sw_cols[i % 5]:
+            st.markdown(
+                f"""<div style="display:flex;align-items:center;gap:6px;margin:.15rem 0">
+                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;border:1px solid #e5e7eb;background:{hexv}"></span>
+                        <span style="font-size:12px">{name}</span>
+                    </div>""",
+                unsafe_allow_html=True
+            )
 
     # Add item form (auto-assigns to first category if any exist)
     with st.form("add_item_form", clear_on_submit=True):
@@ -48,8 +79,8 @@ with st.sidebar:
             gid = next(iter(group_names.values()), "")  # auto-assign or ungrouped
             item = normalize_item({
                 "content": content, "subtitle": subtitle,
-                "start": start, "end": end, "group": gid, "color": color,
-                "style": f"background:{color}; border-color:{color}"
+                "start": start, "end": end, "group": gid, "color": color_hex,
+                "style": f"background:{color_hex}; border-color:{color_hex}"
             })
             st.session_state["items"].append(item)
             st.success("Item added.")
