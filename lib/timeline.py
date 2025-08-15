@@ -34,8 +34,6 @@ def render_timeline(items, groups):
       .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
       .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
       .toolbar button:hover {{ background:#f3f4f6 }}
-
-      /* Item content with subtitle */
       .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
       .itm .ttl {{ font-weight:600 }}
       .itm .sub {{ font-size:12px; opacity:.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
@@ -54,7 +52,6 @@ def render_timeline(items, groups):
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
 
-      // Safe text escaping for HTML
       function escapeHtml(s) {{
         return String(s ?? "")
           .replace(/&/g,'&amp;')
@@ -73,12 +70,10 @@ def render_timeline(items, groups):
         showCurrentTime: true,
         orientation: 'top',
         margin: {{ item: 8, axis: 12 }},
-
-        // Render title + subtitle for items (skip background items)
-        template: function (item, element, data) {{
+        template: function (item) {{
           if (item.type === 'background') return '';
-          const title = item.content ? `<div class="ttl">{'{'}{'}'}</div>`.replace('{{}}', escapeHtml(item.content)) : '';
-          const sub = item.subtitle ? `<div class="sub">{'{'}{'}'}</div>`.replace('{{}}', escapeHtml(item.subtitle)) : '';
+          const title = item.content ? `<div class="ttl">${{escapeHtml(item.content)}}</div>` : '';
+          const sub = item.subtitle ? `<div class="sub">${{escapeHtml(item.subtitle)}}</div>` : '';
           return `<div class="itm">${{title}}${{sub}}</div>`;
         }},
       }};
@@ -95,10 +90,8 @@ def render_timeline(items, groups):
         timeline.moveTo(now, {{ animation: true }});
       }};
 
-      // Initial fit after layout paints
       setTimeout(fit, 50);
 
-      // Smooth trackpad/mouse horizontal wheel (hold Shift to zoom)
       function attachWheel(el) {{
         el.addEventListener('wheel', (e) => {{
           if (!e.shiftKey || e.deltaY === 0) return;
