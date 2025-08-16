@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import uuid
 import streamlit as st
 
 from lib.styles import GLOBAL_CSS
@@ -10,36 +11,6 @@ from lib.timeline import render_timeline
 
 st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
-
-# ---------- SESSION BOOTSTRAP ----------
-if "items" not in st.session_state:
-    st.session_state["items"] = []
-if "groups" not in st.session_state:
-    st.session_state["groups"] = []
-if "active_group_id" not in st.session_state:
-    st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
-if "editing_item_id" not in st.session_state:
-    st.session_state["editing_item_id"] = ""
-
-# Form defaults (used by sidebar widgets)
-def init_form_defaults():
-    st.session_state.setdefault("form_title", "")
-    st.session_state.setdefault("form_subtitle", "")
-    st.session_state.setdefault("form_start", date.today())
-    st.session_state.setdefault("form_end", date.today())
-    st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
-
-def clear_form_defaults():
-    st.session_state["form_title"] = ""
-    st.session_state["form_subtitle"] = ""
-    st.session_state["form_start"] = date.today()
-    st.session_state["form_end"] = date.today()
-    st.session_state["form_color_label"] = PALETTE_OPTIONS[0]
-
-def iso_to_date(s: str) -> date:
-    if not s:
-        return date.today()
-    return datetime.fromisoformat(s[:10]).date()
 
 # ---------- COLOR PALETTE ----------
 PALETTE = [
@@ -58,8 +29,54 @@ PALETTE_MAP = {f"{name} ({hexcode})": hexcode for name, hexcode in PALETTE}
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
 HEX_TO_LABEL = {hexcode: label for label, hexcode in PALETTE_MAP.items()}
 
-# ---------- PROCESS PENDING ACTIONS (before any widgets are created!) ----------
-# Use flags set by button handlers to perform destructive changes safely
+# ---------- HELPERS ----------
+def iso_to_date(s: str) -> date:
+    if not s:
+        return date.today()
+    return datetime.fromisoformat(s[:10]).date()
+
+def init_form_defaults():
+    st.session_state.setdefault("form_title", "")
+    st.session_state.setdefault("form_subtitle", "")
+    st.session_state.setdefault("form_start", date.today())
+    st.session_state.setdefault("form_end", date.today())
+    st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
+
+def clear_form_defaults():
+    st.session_state["form_title"] = ""
+    st.session_state["form_subtitle"] = ""
+    st.session_state["form_start"] = date.today()
+    st.session_state["form_end"] = date.today()
+    st.session_state["form_color_label"] = PALETTE_OPTIONS[0]
+
+def ensure_stable_ids():
+    """Guarantee every item/group has a stable string id (migrates old data)."""
+    changed = False
+    for it in st.session_state.get("items", []):
+        if not it.get("id"):
+            it["id"] = str(uuid.uuid4())
+            changed = True
+        else:
+            it["id"] = str(it["id"])
+    for g in st.session_state.get("groups", []):
+        if not g.get("id"):
+            g["id"] = str(uuid.uuid4())
+            changed = True
+        else:
+            g["id"] = str(g["id"])
+    return changed
+
+# ---------- SESSION BOOTSTRAP ----------
+if "items" not in st.session_state:
+    st.session_state["items"] = []
+if "groups" not in st.session_state:
+    st.session_state["groups"] = []
+if "active_group_id" not in st.session_state:
+    st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
+if "editing_item_id" not in st.session_state:
+    st.session_state["editing_item_id"] = ""
+
+# Process pending destructive actions BEFORE widgets render
 if st.session_state.get("_pending_delete_id"):
     eid = st.session_state.pop("_pending_delete_id")
     st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
@@ -72,8 +89,11 @@ if st.session_state.get("_pending_reset"):
     st.session_state["editing_item_id"] = ""
     clear_form_defaults()
 
-# Normalize after any pending mutations
+# Normalize and migrate IDs
 normalize_state(st.session_state)
+if ensure_stable_ids():
+    # Drop any stale selection after migration
+    st.session_state["editing_item_id"] = ""
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
@@ -95,7 +115,7 @@ with st.sidebar:
                         if g["id"] == st.session_state.get("active_group_id","")), "(none)")
     st.caption(f"Active category: **{active_name or '(none)'}**")
 
-    # Single form to keep focus while typing
+    # Single form (prevents reruns on each keystroke; keeps focus while typing)
     init_form_defaults()
     with st.form("item_form", clear_on_submit=False):
         colA, colB = st.columns(2)
@@ -180,7 +200,6 @@ with st.sidebar:
         st.session_state["groups"] = [normalize_group(x) for x in payload.get("groups", [])]
         st.session_state["active_group_id"] = (st.session_state["groups"][-1]["id"] if st.session_state["groups"] else "")
         st.session_state["editing_item_id"] = ""
-        # No need to clear form; keep current inputs
         st.success("Imported.")
         st.rerun()
 
