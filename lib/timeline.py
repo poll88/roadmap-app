@@ -2,6 +2,7 @@ import json
 from datetime import date, timedelta
 import streamlit.components.v1 as components
 
+# Assets
 _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
 _FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
@@ -13,7 +14,7 @@ def render_timeline(items, groups, selected_id: str = ""):
     # Dynamic min date: at most 1 year ago
     min_date = (date.today() - timedelta(days=365)).isoformat()
 
-    # Background rows (capped at 2028)
+    # Background rows tint (capped at 2028)
     bg_items = [{
         "id": f"bg-{g['id']}", "group": g["id"],
         "start": min_date, "end": "2028-12-31", "type": "background",
@@ -42,10 +43,10 @@ def render_timeline(items, groups, selected_id: str = ""):
       .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
       .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
       .toolbar button:hover {{ background:#f3f4f6 }}
-      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
-      .itm .ttl {{ font-weight:600 }}
+      .itm {{ display:block; text-decoration:none; color:inherit; }}
+      .itm .ttl {{ font-weight:600; line-height:1.2 }}
       .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
-      /* Highlight selected item (border & subtle glow) */
+      /* Highlight selected item */
       .vis-item.vis-selected {{ box-shadow: 0 0 0 2px rgba(37,99,235,.7) inset, 0 0 0 2px rgba(37,99,235,.25); border-color:#2563eb !important; }}
     </style>
   </head>
@@ -58,26 +59,6 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     <script src="{_VIS_JS}"></script>
     <script>
-      // ---- Streamlit glue ----
-      function setVal(value) {{
-        if (window.Streamlit && typeof window.Streamlit.setComponentValue === "function") {{
-          window.Streamlit.setComponentValue(value);
-        }}
-        try {{
-          window.parent.postMessage({{
-            isStreamlitMessage: true,
-            type: "streamlit:setComponentValue",
-            value
-          }}, "*");
-        }} catch (e) {{}}
-      }}
-      function setHeight(h) {{
-        if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {{
-          window.Streamlit.setFrameHeight(h);
-        }}
-      }}
-      setHeight({height_px + 80});
-
       const items  = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
@@ -99,9 +80,11 @@ def render_timeline(items, groups, selected_id: str = ""):
         margin: {{ item: 8, axis: 12 }},
         template: function (item) {{
           if (item.type === 'background') return '';
+          // Clickable overlay that navigates the parent to ?sel=<id>
+          const href = '?sel=' + encodeURIComponent(item.id);
           const title = item.content ? `<div class="ttl">${{escapeHtml(item.content)}}</div>` : '';
           const sub = item.subtitle ? `<div class="sub">${{escapeHtml(item.subtitle)}}</div>` : '';
-          return `<div class="itm">${{title}}${{sub}}</div>`;
+          return `<a class="itm" href="${{href}}" target="_parent">${{title}}${{sub}}</a>`;
         }},
       }};
 
@@ -110,28 +93,8 @@ def render_timeline(items, groups, selected_id: str = ""):
       // Preselect currently selected id (from Python) and focus it
       const preselectId = {selected_id_js};
       if (preselectId) {{
-        try {{
-          timeline.setSelection([preselectId], {{ focus: true }});
-        }} catch (e) {{}}
+        try {{ timeline.setSelection([preselectId], {{ focus: true }}); }} catch (e) {{}}
       }}
-
-      function sendSelection(id) {{
-        if (!id) {{
-          setVal({{ type: 'select', item: null }});
-          return;
-        }}
-        const itm = items.get(id);
-        setVal({{ type: 'select', item: itm }});
-      }}
-
-      timeline.on('select', (props) => {{
-        const id = (props && props.items && props.items[0]) ? props.items[0] : null;
-        if (id && String(id).startsWith('bg-')) {{
-          setVal({{ type: 'select', item: null }});
-        }} else {{
-          sendSelection(id);
-        }}
-      }});
 
       function fit() {{ try {{ timeline.fit({{ animation: true }}); }} catch(e){{}} }}
       document.getElementById('btn-fit').onclick = fit;
@@ -158,5 +121,5 @@ def render_timeline(items, groups, selected_id: str = ""):
   </body>
 </html>
     """
-    # Return selection payload to Python (requires Streamlit >= 1.29 to capture values from components.html)
-    return components.html(html, height=height_px + 80, scrolling=False)
+    # No need to return a value; selection happens via URL query param.
+    components.html(html, height=height_px + 80, scrolling=False)
