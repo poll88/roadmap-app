@@ -24,7 +24,7 @@ def render_timeline(items, groups, selected_id: str = ""):
         "className": "row-bg"
     } for g in groups]
 
-    # IMPORTANT: real items FIRST, then backgrounds (so selection prefers real items)
+    # IMPORTANT: real items FIRST, then backgrounds
     items_json  = json.dumps(items + bg_items)
     groups_json = json.dumps(groups)
     selected_id_js = json.dumps(selected_id or "")
@@ -51,7 +51,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       .toolbar button:hover {{ background:#f3f4f6 }}
 
       /* Item content (title + subtitle) */
-      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15; cursor:pointer }}
+      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
       .itm .ttl {{ font-weight:600 }}
       .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
 
@@ -71,23 +71,6 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     <script src="{_VIS_JS}"></script>
     <script>
-      // ---- Streamlit glue ----
-      function sendToStreamlit(value) {{
-        // Preferred (newer Streamlit)
-        if (window.Streamlit && typeof window.Streamlit.setComponentValue === "function") {{
-          window.Streamlit.setComponentValue(value);
-          return;
-        }}
-        // Fallback for older Streamlit
-        try {{
-          window.parent.postMessage({{
-            isStreamlitMessage: true,
-            type: "streamlit:setComponentValue",
-            value
-          }}, "*");
-        }} catch (e) {{}}
-      }}
-
       const items  = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
@@ -125,29 +108,30 @@ def render_timeline(items, groups, selected_id: str = ""):
         try {{ timeline.setSelection([preselectId], {{ focus: false }}); }} catch (e) {{}}
       }}
 
-      // Click ANYWHERE on the bar -> send selection to Streamlit
+      function pushSelectionToTopWindow(id) {{
+        try {{
+          const url = new URL(window.top.location.href);
+          url.searchParams.set('sel', id);
+          window.top.location.href = url.toString();
+        }} catch (e) {{
+          // Fallback: best-effort
+          const q = window.top.location.search ? window.top.location.search + '&' : '?';
+          window.top.location.href = window.top.location.pathname + q + 'sel=' + encodeURIComponent(id);
+        }}
+      }}
+
+      // Tap/click anywhere on the bar -> update TOP window URL (works on mobile)
       timeline.on('click', (props) => {{
         const id = props && props.item ? props.item : null;
         if (!id || String(id).startsWith('bg-')) return;
-        const itm = items.get(id);
-        // Ensure color is present even if vis drops it
-        if (itm && !itm.color && itm.style) {{
-          const m = String(itm.style).match(/background:([^;]+)/);
-          if (m) itm.color = m[1].trim();
-        }}
-        sendToStreamlit({{ type: 'select', item: itm }});
+        pushSelectionToTopWindow(id);
       }});
 
-      // Also handle keyboard selection changes
+      // Keyboard selection changes -> update TOP URL too
       timeline.on('select', (props) => {{
         const id = props && props.items && props.items[0] ? props.items[0] : null;
         if (!id || String(id).startsWith('bg-')) return;
-        const itm = items.get(id);
-        if (itm && !itm.color && itm.style) {{
-          const m = String(itm.style).match(/background:([^;]+)/);
-          if (m) itm.color = m[1].trim();
-        }}
-        sendToStreamlit({{ type: 'select', item: itm }});
+        pushSelectionToTopWindow(id);
       }});
 
       // Toolbar actions
@@ -175,5 +159,4 @@ def render_timeline(items, groups, selected_id: str = ""):
   </body>
 </html>
     """
-    # Return the selection payload to Python (Streamlit will rerun on setComponentValue)
-    return components.html(html, height=height_px + 80, scrolling=False)
+    components.html(html, height=height_px + 80, scrolling=False)
