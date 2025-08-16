@@ -66,6 +66,24 @@ def ensure_stable_ids():
             g["id"] = str(g["id"])
     return changed
 
+def prefill_from_item_id(item_id: str):
+    """Prefill sidebar form + active category from the given item id."""
+    for it in st.session_state.get("items", []):
+        if str(it.get("id")) == str(item_id):
+            st.session_state["editing_item_id"] = str(item_id)
+            st.session_state["form_title"] = it.get("content", "")
+            st.session_state["form_subtitle"] = it.get("subtitle", "")
+            st.session_state["form_start"] = iso_to_date(it.get("start", ""))
+            st.session_state["form_end"]   = iso_to_date(it.get("end", ""))
+            gid = str(it.get("group", ""))
+            if gid:
+                st.session_state["active_group_id"] = gid
+            st.session_state["form_color_label"] = HEX_TO_LABEL.get(
+                it.get("color", ""), st.session_state.get("form_color_label", PALETTE_OPTIONS[0])
+            )
+            return True
+    return False
+
 def get_selected_item():
     eid = st.session_state.get("editing_item_id", "")
     for it in st.session_state.get("items", []):
@@ -96,10 +114,24 @@ if st.session_state.get("_pending_reset"):
     st.session_state["editing_item_id"] = ""
     clear_form_defaults()
 
-# Normalize and migrate IDs
+# Normalize and migrate IDs (so every item has a stable id)
 normalize_state(st.session_state)
 if ensure_stable_ids():
     st.session_state["editing_item_id"] = ""
+
+# --------- URL selection (?sel=<id>) from timeline click (modern API) ---------
+# Read early, prefill, then clear to avoid stickiness.
+qp = dict(st.query_params)  # MappingProxy -> plain dict
+sel_from_url = qp.get("sel")
+if isinstance(sel_from_url, list):
+    sel_from_url = sel_from_url[0] if sel_from_url else None
+
+if sel_from_url:
+    if prefill_from_item_id(sel_from_url):
+        # clear 'sel' and rerun once
+        if "sel" in st.query_params:
+            del st.query_params["sel"]
+        st.rerun()
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
@@ -121,11 +153,10 @@ with st.sidebar:
                         if g["id"] == st.session_state.get("active_group_id","")), "(none)")
     st.caption(f"Active category: **{active_name or '(none)'}**")
 
-    # Show current selection (debug-friendly)
+    # Show current selection for clarity
     sel = get_selected_item()
     if sel:
-        short = str(sel.get("id"))[:8]
-        st.caption(f"Selected: **{sel.get('content','(untitled)')}** · id `{short}`")
+        st.caption(f"Selected: **{sel.get('content','(untitled)')}** · id `{str(sel.get('id'))[:8]}`")
     else:
         st.caption("Selected: *(none)*")
 
@@ -228,28 +259,9 @@ else:
     items_view  = [i for i in st.session_state["items"]  if not selected_ids or i.get("group","") in selected_ids]
     groups_view = [normalize_group(g) for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
 
-    # Render timeline and CAPTURE selection payload
-    selection = render_timeline(
+    # Render timeline; highlight currently selected id
+    render_timeline(
         items_view,
         groups_view,
         selected_id=st.session_state.get("editing_item_id","")
     )
-
-    # Update sidebar when clicking a timeline item (safe rerun only when changed)
-    if isinstance(selection, dict) and selection.get("type") == "select" and selection.get("item"):
-        itm = selection["item"]
-        if itm.get("type") != "background":
-            sel_id = str(itm.get("id"))
-            if sel_id != st.session_state.get("editing_item_id",""):
-                st.session_state["editing_item_id"] = sel_id
-                st.session_state["form_title"] = itm.get("content","")
-                st.session_state["form_subtitle"] = itm.get("subtitle","")
-                st.session_state["form_start"] = iso_to_date(itm.get("start",""))
-                st.session_state["form_end"]   = iso_to_date(itm.get("end",""))
-                gid = str(itm.get("group",""))
-                if gid:
-                    st.session_state["active_group_id"] = gid
-                # adopt color if present
-                if "color" in itm and itm["color"]:
-                    st.session_state["form_color_label"] = HEX_TO_LABEL.get(itm["color"], st.session_state["form_color_label"])
-                st.rerun()
