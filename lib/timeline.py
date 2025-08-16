@@ -24,6 +24,7 @@ def render_timeline(items, groups, selected_id: str = ""):
         "className": "row-bg"
     } for g in groups]
 
+    # IMPORTANT: real items FIRST, then backgrounds (so selection prefers real items)
     items_json  = json.dumps(items + bg_items)
     groups_json = json.dumps(groups)
     selected_id_js = json.dumps(selected_id or "")
@@ -50,7 +51,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       .toolbar button:hover {{ background:#f3f4f6 }}
 
       /* Item content (title + subtitle) */
-      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
+      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15; cursor:pointer }}
       .itm .ttl {{ font-weight:600 }}
       .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
 
@@ -70,6 +71,23 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     <script src="{_VIS_JS}"></script>
     <script>
+      // ---- Streamlit glue ----
+      function sendToStreamlit(value) {{
+        // Preferred (newer Streamlit)
+        if (window.Streamlit && typeof window.Streamlit.setComponentValue === "function") {{
+          window.Streamlit.setComponentValue(value);
+          return;
+        }}
+        // Fallback for older Streamlit
+        try {{
+          window.parent.postMessage({{
+            isStreamlitMessage: true,
+            type: "streamlit:setComponentValue",
+            value
+          }}, "*");
+        }} catch (e) {{}}
+      }}
+
       const items  = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
@@ -82,6 +100,8 @@ def render_timeline(items, groups, selected_id: str = ""):
 
       const options = {{
         stack: true,
+        selectable: true,
+        multiselect: false,
         horizontalScroll: true,
         zoomKey: 'ctrlKey',
         min: '{min_date}',
@@ -102,22 +122,32 @@ def render_timeline(items, groups, selected_id: str = ""):
       // Preselect id from Python
       const preselectId = {selected_id_js};
       if (preselectId) {{
-        try {{ timeline.setSelection([preselectId], {{ focus: true }}); }} catch (e) {{}}
+        try {{ timeline.setSelection([preselectId], {{ focus: false }}); }} catch (e) {{}}
       }}
 
-      // Click anywhere on a bar -> set ?sel=<id> and navigate (reliable)
+      // Click ANYWHERE on the bar -> send selection to Streamlit
       timeline.on('click', (props) => {{
         const id = props && props.item ? props.item : null;
         if (!id || String(id).startsWith('bg-')) return;
-        try {{
-          const url = new URL(window.location.href);
-          url.searchParams.set('sel', id);
-          window.location.href = url.toString();
-        }} catch (e) {{
-          // Fallback: just append ?sel=<id> if URL API unavailable
-          const q = window.location.search ? window.location.search + '&' : '?';
-          window.location.href = window.location.pathname + q + 'sel=' + encodeURIComponent(id);
+        const itm = items.get(id);
+        // Ensure color is present even if vis drops it
+        if (itm && !itm.color && itm.style) {{
+          const m = String(itm.style).match(/background:([^;]+)/);
+          if (m) itm.color = m[1].trim();
         }}
+        sendToStreamlit({{ type: 'select', item: itm }});
+      }});
+
+      // Also handle keyboard selection changes
+      timeline.on('select', (props) => {{
+        const id = props && props.items && props.items[0] ? props.items[0] : null;
+        if (!id || String(id).startsWith('bg-')) return;
+        const itm = items.get(id);
+        if (itm && !itm.color && itm.style) {{
+          const m = String(itm.style).match(/background:([^;]+)/);
+          if (m) itm.color = m[1].trim();
+        }}
+        sendToStreamlit({{ type: 'select', item: itm }});
       }});
 
       // Toolbar actions
@@ -145,4 +175,5 @@ def render_timeline(items, groups, selected_id: str = ""):
   </body>
 </html>
     """
-    components.html(html, height=height_px + 80, scrolling=False)
+    # Return the selection payload to Python (Streamlit will rerun on setComponentValue)
+    return components.html(html, height=height_px + 80, scrolling=False)
