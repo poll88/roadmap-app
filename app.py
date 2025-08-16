@@ -75,11 +75,9 @@ def prefill_from_item_id(item_id: str):
             st.session_state["form_subtitle"] = it.get("subtitle", "")
             st.session_state["form_start"] = iso_to_date(it.get("start", ""))
             st.session_state["form_end"]   = iso_to_date(it.get("end", ""))
-            # adopt item's group as active
             gid = str(it.get("group", ""))
             if gid:
                 st.session_state["active_group_id"] = gid
-            # adopt color label if known
             st.session_state["form_color_label"] = HEX_TO_LABEL.get(
                 it.get("color", ""), st.session_state.get("form_color_label", PALETTE_OPTIONS[0])
             )
@@ -114,19 +112,19 @@ normalize_state(st.session_state)
 if ensure_stable_ids():
     st.session_state["editing_item_id"] = ""
 
-# --------- URL selection (?sel=<id>) from timeline click ---------
-# Read query param early, prefill, then clear it to avoid stickiness.
-try:
-    qp = st.experimental_get_query_params()
-    sel_from_url = qp.get("sel", [None])[0]
-except Exception:
-    sel_from_url = None
+# --------- URL selection (?sel=<id>) from timeline click (modern API) ---------
+# Read early, prefill, then clear to avoid stickiness.
+qp = dict(st.query_params)  # MappingProxy -> plain dict
+sel_from_url = qp.get("sel")
+# st.query_params can store lists or strings depending on Streamlit; normalize:
+if isinstance(sel_from_url, list):
+    sel_from_url = sel_from_url[0] if sel_from_url else None
 
 if sel_from_url:
     if prefill_from_item_id(sel_from_url):
-        # clear 'sel' param and rerun once
-        qp.pop("sel", None)
-        st.experimental_set_query_params(**qp)
+        # clear 'sel' and rerun once
+        if "sel" in st.query_params:
+            del st.query_params["sel"]
         st.rerun()
 
 # ---------- SIDEBAR ----------
