@@ -66,6 +66,26 @@ def ensure_stable_ids():
             g["id"] = str(g["id"])
     return changed
 
+def prefill_from_item_id(item_id: str):
+    """Prefill sidebar form + active category from the given item id."""
+    for it in st.session_state.get("items", []):
+        if str(it.get("id")) == str(item_id):
+            st.session_state["editing_item_id"] = str(item_id)
+            st.session_state["form_title"] = it.get("content", "")
+            st.session_state["form_subtitle"] = it.get("subtitle", "")
+            st.session_state["form_start"] = iso_to_date(it.get("start", ""))
+            st.session_state["form_end"]   = iso_to_date(it.get("end", ""))
+            # adopt item's group as active
+            gid = str(it.get("group", ""))
+            if gid:
+                st.session_state["active_group_id"] = gid
+            # adopt color label if known
+            st.session_state["form_color_label"] = HEX_TO_LABEL.get(
+                it.get("color", ""), st.session_state.get("form_color_label", PALETTE_OPTIONS[0])
+            )
+            return True
+    return False
+
 # ---------- SESSION BOOTSTRAP ----------
 if "items" not in st.session_state:
     st.session_state["items"] = []
@@ -76,7 +96,7 @@ if "active_group_id" not in st.session_state:
 if "editing_item_id" not in st.session_state:
     st.session_state["editing_item_id"] = ""
 
-# Process pending destructive actions BEFORE widgets render
+# Handle pending destructive actions BEFORE widgets render
 if st.session_state.get("_pending_delete_id"):
     eid = st.session_state.pop("_pending_delete_id")
     st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
@@ -89,11 +109,25 @@ if st.session_state.get("_pending_reset"):
     st.session_state["editing_item_id"] = ""
     clear_form_defaults()
 
-# Normalize and migrate IDs
+# Normalize and migrate IDs (so every item has a stable id)
 normalize_state(st.session_state)
 if ensure_stable_ids():
-    # Drop any stale selection after migration
     st.session_state["editing_item_id"] = ""
+
+# --------- URL selection (?sel=<id>) from timeline click ---------
+# Read query param early, prefill, then clear it to avoid stickiness.
+try:
+    qp = st.experimental_get_query_params()
+    sel_from_url = qp.get("sel", [None])[0]
+except Exception:
+    sel_from_url = None
+
+if sel_from_url:
+    if prefill_from_item_id(sel_from_url):
+        # clear 'sel' param and rerun once
+        qp.pop("sel", None)
+        st.experimental_set_query_params(**qp)
+        st.rerun()
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
@@ -115,7 +149,7 @@ with st.sidebar:
                         if g["id"] == st.session_state.get("active_group_id","")), "(none)")
     st.caption(f"Active category: **{active_name or '(none)'}**")
 
-    # Single form (prevents reruns on each keystroke; keeps focus while typing)
+    # One form (prevents reruns on each keystroke)
     init_form_defaults()
     with st.form("item_form", clear_on_submit=False):
         colA, colB = st.columns(2)
@@ -178,14 +212,12 @@ with st.sidebar:
         if not eid:
             st.warning("Select an item on the timeline to delete.")
         else:
-            # mark deletion for next run (before widgets render), then rerun
             st.session_state["_pending_delete_id"] = eid
             st.rerun()
 
     st.divider()
     st.subheader("🧰 Utilities")
     if st.button("Reset (clear all)", type="secondary"):
-        # mark reset for next run, then rerun
         st.session_state["_pending_reset"] = True
         st.rerun()
 
@@ -216,25 +248,9 @@ else:
     items_view  = [i for i in st.session_state["items"]  if not selected_ids or i.get("group","") in selected_ids]
     groups_view = [normalize_group(g) for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
 
-    selection = render_timeline(
+    # Render timeline; highlight currently selected id
+    render_timeline(
         items_view,
         groups_view,
         selected_id=st.session_state.get("editing_item_id","")
     )
-
-    # Update sidebar when clicking a timeline item (safe rerun only when changed)
-    if isinstance(selection, dict) and selection.get("type") == "select" and selection.get("item"):
-        itm = selection["item"]
-        if itm.get("type") != "background":
-            sel_id = str(itm.get("id"))
-            if sel_id != st.session_state.get("editing_item_id",""):
-                st.session_state["editing_item_id"] = sel_id
-                st.session_state["form_title"] = itm.get("content","")
-                st.session_state["form_subtitle"] = itm.get("subtitle","")
-                st.session_state["form_start"] = iso_to_date(itm.get("start",""))
-                st.session_state["form_end"]   = iso_to_date(itm.get("end",""))
-                gid = str(itm.get("group",""))
-                if gid:
-                    st.session_state["active_group_id"] = gid
-                st.session_state["form_color_label"] = HEX_TO_LABEL.get(itm.get("color",""), st.session_state["form_color_label"])
-                st.rerun()
