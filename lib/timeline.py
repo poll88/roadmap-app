@@ -50,7 +50,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       .toolbar button:hover {{ background:#f3f4f6 }}
 
       /* Item content (title + subtitle) */
-      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15; cursor:pointer }}
+      .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
       .itm .ttl {{ font-weight:600 }}
       .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
 
@@ -70,22 +70,6 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     <script src="{_VIS_JS}"></script>
     <script>
-      // ---- Streamlit glue ----
-      function sendToStreamlit(value) {{
-        // Preferred (newer Streamlit)
-        if (window.Streamlit && typeof window.Streamlit.setComponentValue === "function") {{
-          window.Streamlit.setComponentValue(value);
-        }}
-        // Fallback for older Streamlit
-        try {{
-          window.parent.postMessage({{
-            isStreamlitMessage: true,
-            type: "streamlit:setComponentValue",
-            value
-          }}, "*");
-        }} catch (e) {{}}
-      }}
-
       const items  = new vis.DataSet({items_json});
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
@@ -121,21 +105,19 @@ def render_timeline(items, groups, selected_id: str = ""):
         try {{ timeline.setSelection([preselectId], {{ focus: true }}); }} catch (e) {{}}
       }}
 
-      // Click selection -> send payload back
-      timeline.on('select', (props) => {{
-        const id = (props && props.items && props.items[0]) ? props.items[0] : null;
-        if (!id || String(id).startsWith('bg-')) {{
-          sendToStreamlit({{ type: 'select', item: null }});
-          return;
+      // Click anywhere on a bar -> set ?sel=<id> and navigate (reliable)
+      timeline.on('click', (props) => {{
+        const id = props && props.item ? props.item : null;
+        if (!id || String(id).startsWith('bg-')) return;
+        try {{
+          const url = new URL(window.location.href);
+          url.searchParams.set('sel', id);
+          window.location.href = url.toString();
+        }} catch (e) {{
+          // Fallback: just append ?sel=<id> if URL API unavailable
+          const q = window.location.search ? window.location.search + '&' : '?';
+          window.location.href = window.location.pathname + q + 'sel=' + encodeURIComponent(id);
         }}
-        const itm = items.get(id);
-        // Include color in payload (vis may not copy all props)
-        if (itm && !itm.color && itm.style) {{
-          // try to parse color from style if needed (best-effort)
-          const m = String(itm.style).match(/background:([^;]+)/);
-          if (m) itm.color = m[1].trim();
-        }}
-        sendToStreamlit({{ type: 'select', item: itm }});
       }});
 
       // Toolbar actions
@@ -163,5 +145,4 @@ def render_timeline(items, groups, selected_id: str = ""):
   </body>
 </html>
     """
-    # Return the selection payload to Python
-    return components.html(html, height=height_px + 80, scrolling=False)
+    components.html(html, height=height_px + 80, scrolling=False)
