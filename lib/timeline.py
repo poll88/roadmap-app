@@ -16,16 +16,12 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     # Background rows tint (capped at 2028)
     bg_items = [{
-        "id": f"bg-{g['id']}",
-        "group": g["id"],
-        "start": min_date,
-        "end": "2028-12-31",
-        "type": "background",
+        "id": f"bg-{g['id']}", "group": g["id"],
+        "start": min_date, "end": "2028-12-31", "type": "background",
         "className": "row-bg"
     } for g in groups]
 
-    # IMPORTANT: real items FIRST, then backgrounds
-    items_json  = json.dumps(items + bg_items)
+    items_json  = json.dumps(items + bg_items)  # real items first
     groups_json = json.dumps(groups)
     selected_id_js = json.dumps(selected_id or "")
 
@@ -50,10 +46,19 @@ def render_timeline(items, groups, selected_id: str = ""):
       .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
       .toolbar button:hover {{ background:#f3f4f6 }}
 
+      /* Ensure item content is positioned so the overlay can cover it */
+      .vis-item .vis-item-content {{ position: relative; }}
+
       /* Item content (title + subtitle) */
       .itm {{ display:flex; flex-direction:column; gap:2px; line-height:1.15 }}
       .itm .ttl {{ font-weight:600 }}
       .itm .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
+
+      /* Full-hit overlay link */
+      .itm a.hit {{
+        position:absolute; inset:0; display:block; text-decoration:none; color:inherit;
+        -webkit-tap-highlight-color: transparent;
+      }}
 
       /* Highlight selected item */
       .vis-item.vis-selected {{
@@ -75,7 +80,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       const groups = new vis.DataSet({groups_json});
       const container = document.getElementById('timeline');
 
-      function escapeHtml(s) {{
+      function esc(s) {{
         return String(s ?? "")
           .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
           .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -94,45 +99,21 @@ def render_timeline(items, groups, selected_id: str = ""):
         margin: {{ item: 8, axis: 12 }},
         template: function (item) {{
           if (item.type === 'background') return '';
-          const title = item.content ? `<div class="ttl">${{escapeHtml(item.content)}}</div>` : '';
-          const sub = item.subtitle ? `<div class="sub">${{escapeHtml(item.subtitle)}}</div>` : '';
-          return `<div class="itm" data-id="${{item.id}}">${{title}}${{sub}}</div>`;
+          const href = '?sel=' + encodeURIComponent(item.id);
+          const title = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
+          const sub = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
+          return `<div class="itm">
+                    <a class="hit" href="${{href}}" target="_top" aria-label="Select item"></a>
+                    ${title}${sub}
+                  </div>`;
         }},
       }};
 
       const timeline = new vis.Timeline(container, items, groups, options);
 
-      // Preselect id from Python
-      const preselectId = {selected_id_js};
-      if (preselectId) {{
-        try {{ timeline.setSelection([preselectId], {{ focus: false }}); }} catch (e) {{}}
-      }}
-
-      function pushSelectionToTopWindow(id) {{
-        try {{
-          const url = new URL(window.top.location.href);
-          url.searchParams.set('sel', id);
-          window.top.location.href = url.toString();
-        }} catch (e) {{
-          // Fallback: best-effort
-          const q = window.top.location.search ? window.top.location.search + '&' : '?';
-          window.top.location.href = window.top.location.pathname + q + 'sel=' + encodeURIComponent(id);
-        }}
-      }}
-
-      // Tap/click anywhere on the bar -> update TOP window URL (works on mobile)
-      timeline.on('click', (props) => {{
-        const id = props && props.item ? props.item : null;
-        if (!id || String(id).startsWith('bg-')) return;
-        pushSelectionToTopWindow(id);
-      }});
-
-      // Keyboard selection changes -> update TOP URL too
-      timeline.on('select', (props) => {{
-        const id = props && props.items && props.items[0] ? props.items[0] : null;
-        if (!id || String(id).startsWith('bg-')) return;
-        pushSelectionToTopWindow(id);
-      }});
+      // Preselect id from Python (no scroll focus to avoid big jumps)
+      const pre = {selected_id_js};
+      if (pre) {{ try {{ timeline.setSelection([pre], {{ focus: false }}); }} catch (e) {{}} }}
 
       // Toolbar actions
       function fit() {{ try {{ timeline.fit({{ animation: true }}); }} catch(e){{}} }}
@@ -141,10 +122,9 @@ def render_timeline(items, groups, selected_id: str = ""):
         const now = new Date();
         timeline.moveTo(now, {{ animation: true }});
       }};
-
       setTimeout(fit, 50);
 
-      // Smooth trackpad/mouse horizontal wheel (hold Shift to zoom)
+      // Smooth horizontal wheel (hold Shift to zoom)
       function attachWheel(el) {{
         el.addEventListener('wheel', (e) => {{
           if (!e.shiftKey || e.deltaY === 0) return;
