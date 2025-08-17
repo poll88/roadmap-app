@@ -1,89 +1,73 @@
 import json
-import uuid
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Tuple
 
-# ---------- helpers ----------
-def _iso(x: Any) -> str:
-    """Return YYYY-MM-DD for date/datetime/string, else empty string."""
-    if isinstance(x, datetime):
-        return x.date().isoformat()
-    if isinstance(x, date):
-        return x.isoformat()
-    if isinstance(x, str):
-        return x[:10]
-    return ""
-
-def _coerce_date_any(x: Any) -> date:
-    """Coerce None/str/date/datetime into date (defaults to today)."""
-    if x is None:
-        return date.today()
-    if isinstance(x, datetime):
-        return x.date()
-    if isinstance(x, date):
-        return x
-    if isinstance(x, str) and x:
-        return date.fromisoformat(x[:10])
+def _coerce_date(d):
+    if isinstance(d, date):
+        return d
+    if isinstance(d, str) and d:
+        return datetime.fromisoformat(d[:10]).date()
     return date.today()
 
-# ---------- core API used by app.py ----------
-def normalize_item(it: Any) -> Dict[str, Any]:
-    """Ensure an item has all required fields and valid dates."""
-    it = it or {}
-    s = _coerce_date_any(it.get("start"))
-    e = _coerce_date_any(it.get("end"))
-    s, e = ensure_range(s, e)
-
-    color = str(it.get("color") or "#E9D5FF")
-    style = str(it.get("style") or f"background:{color}; border-color:{color}")
-
-    return {
-        "id": str(it.get("id") or uuid.uuid4()),
-        "content": str(it.get("content", "")).strip(),
-        "subtitle": str(it.get("subtitle", "")).strip(),
-        "start": _iso(s),
-        "end": _iso(e),
-        "group": str(it.get("group", "")).strip(),
-        "color": color,
-        "style": style,
-        "type": "range",
-        # NOTE: no 'status' field anymore by design
-    }
-
-def normalize_group(g: Any) -> Dict[str, Any]:
-    """Ensure a group (category) has id/content/order."""
-    g = g or {}
-    return {
-        "id": str(g.get("id") or uuid.uuid4()),
-        "content": (str(g.get("content") or "Group")).strip(),
-        "order": int(g.get("order", 0)),
-    }
-
-def normalize_state(state: Dict[str, Any]) -> None:
-    """Normalize items and groups inside session_state dict."""
-    state.setdefault("items", [])
-    state.setdefault("groups", [])
-    state["items"] = [normalize_item(x) for x in state["items"]]
-    state["groups"] = [normalize_group(x) for x in state["groups"]]
-
-def reset_defaults(state: Dict[str, Any]) -> None:
-    state["items"] = []
-    state["groups"] = []
-
-def ensure_range(start: date, end: date) -> Tuple[date, date]:
-    """Return (start,end) with end>=start and min 1-day length."""
-    start = _coerce_date_any(start)
-    end   = _coerce_date_any(end)
+def ensure_range(start: date, end: date):
+    start = _coerce_date(start); end = _coerce_date(end)
     if end < start:
         start, end = end, start
     if end == start:
         end = start + timedelta(days=1)
     return start, end
 
-def export_items_groups(state: Dict[str, Any]) -> str:
-    """Pretty JSON export of current items/groups."""
+def normalize_item(raw):
+    """Return a vis-timeline compatible item dict."""
+    out = dict(raw)
+    out["id"] = str(out.get("id") or out.get("_id") or out.get("content","") + str(out.get("start","")))
+    out["content"] = out.get("content","").strip()
+    out["subtitle"] = out.get("subtitle","").strip()
+    out["start"] = _coerce_date(out.get("start"))
+    out["end"]   = _coerce_date(out.get("end"))
+    out["type"] = "range"
+    # Style/color
+    color = out.get("color")
+    if color:
+        out["style"] = f"background:{color}; border-color:{color}"
+    return out
+
+def normalize_group(raw):
+    out = dict(raw)
+    out["id"] = str(out.get("id") or out.get("content",""))
+    out["content"] = out.get("content","").strip()
+    out["order"] = out.get("order", 0)
+    return out
+
+def normalize_state(state):
+    state["items"] = [normalize_item(x) for x in state.get("items",[])]
+    state["groups"] = [normalize_group(x) for x in state.get("groups",[])]
+
+def reset_defaults(state):
+    state["items"] = []
+    state["groups"] = []
+    state["active_group_id"] = ""
+    state["editing_item_id"] = ""
+
+def export_items_groups(state) -> str:
     payload = {
-        "items": state.get("items", []),
-        "groups": state.get("groups", []),
+        "items": [
+            {
+                "id": it.get("id"),
+                "content": it.get("content",""),
+                "subtitle": it.get("subtitle",""),
+                "start": it.get("start").isoformat() if isinstance(it.get("start"), date) else str(it.get("start")),
+                "end":   it.get("end").isoformat()   if isinstance(it.get("end"), date)   else str(it.get("end")),
+                "group": it.get("group",""),
+                "color": it.get("color","") or _extract_color_from_style(it.get("style","")),
+            } for it in state.get("items",[])
+        ],
+        "groups": state.get("groups",[])
     }
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+    return json.dumps(payload, indent=2)
+
+def _extract_color_from_style(style: str) -> str:
+    if not style: return ""
+    # parse background: #xxxxxx;
+    import re
+    m = re.search(r'background:\s*([^;]+)', style)
+    return (m.group(1).strip() if m else "")
