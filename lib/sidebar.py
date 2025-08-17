@@ -24,22 +24,27 @@ def _ensure_form_defaults(state):
     state.setdefault("form_end", date.today())
     state.setdefault("form_color_label", PALETTE_OPTIONS[0])
 
-def render_sidebar(state, *, normalize_item, ensure_range, export_items_groups):
-    actions = {}
+def _item_label(it, groups_by_id):
+    gname = groups_by_id.get(it.get("group",""), "")
+    title = it.get("content","(untitled)")
+    start = str(it.get("start",""))[:10]
+    return f"{title} · {gname} · {start}"
 
+def render_sidebar(state, ensure_range, export_items_groups):
+    from lib.state import normalize_item, normalize_group
+
+    actions = {}
     with st.sidebar:
         st.header("📅 Add / Edit")
 
-        # Category management (+ active category)
+        # --- Category management (+ active category) ---
         group_names = {g["content"]: g["id"] for g in state["groups"]}
         new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
 
         if new_group_name and new_group_name in group_names:
             state["active_group_id"] = group_names[new_group_name]
         if new_group_name and new_group_name not in group_names:
-            g = {"content": new_group_name, "order": len(state["groups"])}
-            from lib.state import normalize_group
-            g = normalize_group(g)
+            g = normalize_group({"content": new_group_name, "order": len(state["groups"])})
             state["groups"].append(g)
             group_names[new_group_name] = g["id"]
             state["active_group_id"] = g["id"]
@@ -48,15 +53,60 @@ def render_sidebar(state, *, normalize_item, ensure_range, export_items_groups):
                             if g["id"] == state.get("active_group_id","")), "(none)")
         st.caption(f"Active category: **{active_name or '(none)'}**")
 
-        # Show current selection for clarity
-        sel_id = state.get("editing_item_id","")
-        if sel_id:
-            title = next((i.get("content","(untitled)") for i in state["items"] if str(i.get("id"))==str(sel_id)), "(untitled)")
-            st.caption(f"Selected: **{title}** · id `{str(sel_id)[:8]}`")
+        # --- Reliable item picker (drives selection; mobile friendly) ---
+        groups_by_id = {g["id"]: g["content"] for g in state["groups"]}
+        options = []
+        index = 0
+        selected_idx = None
+        for it in state["items"]:
+            if it.get("type") == "background":
+                continue
+            options.append((it["id"], _item_label(it, groups_by_id)))
+        if options:
+            current_id = state.get("editing_item_id","")
+            # figure current index
+            for i,(iid,_) in enumerate(options):
+                if str(iid) == str(current_id):
+                    selected_idx = i
+                    break
+
+            choice = st.selectbox(
+                "Select existing item",
+                options=[lbl for _,lbl in options],
+                index=selected_idx if selected_idx is not None else 0,
+                key="picker_select",
+            )
+            # When user picks, sync editing_item_id + prefill form
+            pick_id = None
+            for iid, lbl in options:
+                if lbl == choice:
+                    pick_id = iid
+                    break
+            if pick_id and str(pick_id) != str(state.get("editing_item_id","")):
+                state["editing_item_id"] = str(pick_id)
+                # prefill form from picked item
+                picked = next((x for x in state["items"] if str(x.get("id")) == str(pick_id)), None)
+                if picked:
+                    from lib.ids import _iso_to_date  # internal helper
+                    state["form_title"] = picked.get("content","")
+                    state["form_subtitle"] = picked.get("subtitle","")
+                    state["form_start"] = _iso_to_date(picked.get("start",""))
+                    state["form_end"]   = _iso_to_date(picked.get("end",""))
+                    if picked.get("group"):
+                        state["active_group_id"] = picked.get("group")
+                    # try match color label
+                    hexcol = picked.get("color","")
+                    for label, hexcode in PALETTE_MAP.items():
+                        if hexcode == hexcol:
+                            state["form_color_label"] = label
+                            break
+
+            # Show current selection
+            st.caption(f"Selected: **{choice}**")
         else:
             st.caption("Selected: *(none)*")
 
-        # One form (prevents reruns on each keystroke)
+        # --- Form (keeps focus; no rerun on each keystroke) ---
         _ensure_form_defaults(state)
         with st.form("item_form", clear_on_submit=False):
             colA, colB = st.columns(2)
@@ -74,7 +124,7 @@ def render_sidebar(state, *, normalize_item, ensure_range, export_items_groups):
             edit_clicked   = col2.form_submit_button("✏️ Edit item")
             delete_clicked = col3.form_submit_button("🗑 Delete item")
 
-        # -------- Actions (set flags/perform) --------
+        # -------- Actions (perform now; orchestrator triggers rerun) --------
         if add_clicked:
             color_hex = PALETTE_MAP[state["form_color_label"]]
             gid = state.get("active_group_id","")
@@ -94,7 +144,7 @@ def render_sidebar(state, *, normalize_item, ensure_range, export_items_groups):
         if edit_clicked:
             eid = state.get("editing_item_id","")
             if not eid:
-                st.warning("Select an item on the timeline to edit.")
+                st.warning("Select an item to edit (picker above).")
             else:
                 color_hex = PALETTE_MAP[state["form_color_label"]]
                 for idx, it in enumerate(state["items"]):
@@ -116,7 +166,7 @@ def render_sidebar(state, *, normalize_item, ensure_range, export_items_groups):
         if delete_clicked:
             eid = state.get("editing_item_id","")
             if not eid:
-                st.warning("Select an item on the timeline to delete.")
+                st.warning("Select an item to delete (picker above).")
             else:
                 actions["delete"] = eid
 
@@ -138,7 +188,6 @@ def render_sidebar(state, *, normalize_item, ensure_range, export_items_groups):
             state["active_group_id"] = (state["groups"][-1]["id"] if state["groups"] else "")
             state["editing_item_id"] = ""
             st.success("Imported.")
-            actions["reset"] = False  # no reset, but we will rerun externally
             st.rerun()
 
     return actions
