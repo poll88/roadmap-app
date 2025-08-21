@@ -1,4 +1,4 @@
-# app.py — simple & reliable orchestrator (with normalize_state signature guard)
+# app.py — simple & reliable, with in-form Category dropdown and "New item" picker
 
 import uuid
 from datetime import date
@@ -21,14 +21,12 @@ st.session_state.setdefault("groups", [])
 st.session_state.setdefault("active_group_id", "")
 st.session_state.setdefault("editing_item_id", "")
 
-# Normalize existing state (works with both normalize_state signatures)
+# Be tolerant to either normalize_state signature
 try:
-    # Preferred: function that takes the whole session_state dict
     res = normalize_state(st.session_state)
     if isinstance(res, tuple):
         st.session_state["items"], st.session_state["groups"] = res
 except TypeError:
-    # Fallback: function that takes (items, groups) and returns a tuple
     res = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
     if isinstance(res, tuple):
         st.session_state["items"], st.session_state["groups"] = res
@@ -56,24 +54,34 @@ def _find_item(iid: str):
             return it
     return None
 
-def _prefill_from_item(it: dict):
-    st.session_state["form_title"] = it.get("content","")
-    st.session_state["form_subtitle"] = it.get("subtitle","")
-    st.session_state["form_start"] = it.get("start") or date.today()
-    st.session_state["form_end"]   = it.get("end") or date.today()
-    if it.get("group"):
-        st.session_state["active_group_id"] = it["group"]
-    for label, hexv in PALETTE_MAP.items():
-        if hexv == it.get("color"):
-            st.session_state["form_color_label"] = label
-            break
-
 def _ensure_form_defaults():
     st.session_state.setdefault("form_title","")
     st.session_state.setdefault("form_subtitle","")
     st.session_state.setdefault("form_start", date.today())
     st.session_state.setdefault("form_end",   date.today())
     st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
+    st.session_state.setdefault("form_category_choice", "+ New…")
+    st.session_state.setdefault("form_new_category_name","")
+
+def _prefill_form_from_item(it: dict, groups_by_id: dict):
+    st.session_state["form_title"] = it.get("content","")
+    st.session_state["form_subtitle"] = it.get("subtitle","")
+    st.session_state["form_start"] = it.get("start") or date.today()
+    st.session_state["form_end"]   = it.get("end") or date.today()
+    # color -> label
+    for label, hexv in PALETTE_MAP.items():
+        if hexv == it.get("color"):
+            st.session_state["form_color_label"] = label
+            break
+    # category -> dropdown default
+    gid = it.get("group")
+    if gid and gid in groups_by_id:
+        st.session_state["form_category_choice"] = groups_by_id[gid]
+        st.session_state["form_new_category_name"] = ""
+        st.session_state["active_group_id"] = gid
+    else:
+        st.session_state["form_category_choice"] = "+ New…"
+        st.session_state["form_new_category_name"] = ""
 
 def _label_for_item(it, groups_by_id):
     gname = groups_by_id.get(it.get("group",""), "")
@@ -86,62 +94,104 @@ def _label_for_item(it, groups_by_id):
 with st.sidebar:
     st.header("📅 Add / Edit")
 
-    # Category (type to create/select)
-    names = {g["content"]: g["id"] for g in st.session_state["groups"]}
-    cat = st.text_input("Category", placeholder="e.g., Germany · Residential")
-    if cat:
-        if cat in names:
-            st.session_state["active_group_id"] = names[cat]
-        else:
-            g = normalize_group({"content": cat, "order": len(st.session_state["groups"])})
-            st.session_state["groups"].append(g)
-            st.session_state["active_group_id"] = g["id"]
+    # --- Top picker: "New item" by default; no timeline-click selection ---
+    groups_by_id = {g["id"]: g["content"] for g in st.session_state["groups"]}
+    item_labels = [ _label_for_item(it, groups_by_id)
+                    for it in st.session_state["items"]
+                    if it.get("type") != "background" ]
+    item_ids    = [ it["id"] for it in st.session_state["items"] if it.get("type") != "background" ]
 
-    active_name = next((g["content"] for g in st.session_state["groups"]
-                        if g["id"] == st.session_state.get("active_group_id","")), "")
-    st.caption(f"Active category: **{active_name or '(none)'}**")
+    # Build options with "New item" at the top
+    PICK_NEW = "➕ New item"
+    picker_options = [PICK_NEW] + item_labels
 
-    # Picker (reliable selection for edit/delete)
-    gids = {g["id"]: g["content"] for g in st.session_state["groups"]}
-    opts = [(it["id"], _label_for_item(it, gids))
-            for it in st.session_state["items"]
-            if it.get("type")!="background"]
-    labels = [lbl for _,lbl in opts]
-
-    current_idx = 0
+    # Compute default index: if editing_item_id is set, point to that; else "New item"
     if st.session_state.get("editing_item_id"):
-        for i,(iid,_) in enumerate(opts):
-            if str(iid) == str(st.session_state["editing_item_id"]):
-                current_idx = i; break
+        try:
+            idx = item_ids.index(st.session_state["editing_item_id"])
+            default_picker_index = idx + 1  # shift by 1 due to "New item"
+        except ValueError:
+            default_picker_index = 0
+    else:
+        default_picker_index = 0
 
-    pick_label = st.selectbox("Select existing", labels or ["(none)"], index=current_idx if labels else 0)
-    picked_id = next((iid for iid,lbl in opts if lbl == pick_label), "")
+    pick = st.selectbox("Item", picker_options, index=default_picker_index, key="picker_label")
 
-    if picked_id and str(picked_id) != str(st.session_state.get("editing_item_id","")):
-        st.session_state["editing_item_id"] = str(picked_id)
-        _prefill_from_item(_find_item(picked_id))
+    # If user picked an existing item, sync selection and prefill form; if "New", clear it
+    if pick == PICK_NEW:
+        st.session_state["editing_item_id"] = ""
+        _ensure_form_defaults()  # clears the form to defaults
+    else:
+        # map label -> id and prefill
+        sel_idx = picker_options.index(pick) - 1  # back to item index
+        sel_id  = item_ids[sel_idx]
+        if str(sel_id) != str(st.session_state.get("editing_item_id","")):
+            st.session_state["editing_item_id"] = str(sel_id)
+        _ensure_form_defaults()
+        _prefill_form_from_item(_find_item(sel_id), groups_by_id)
 
+    # --- Form (includes Category dropdown) ---
     _ensure_form_defaults()
+    # Build category options from existing groups
+    existing_categories = [g["content"] for g in st.session_state["groups"]]
+    category_options = ["+ New…"] + existing_categories
+    # Compute default category index *before* rendering the widget
+    if st.session_state["form_category_choice"] in category_options:
+        cat_index = category_options.index(st.session_state["form_category_choice"])
+    else:
+        cat_index = 0
+
     with st.form("item_form", clear_on_submit=False):
-        cA,cB = st.columns(2)
-        start = cA.date_input("Start", key="form_start")
-        end   = cB.date_input("End",   key="form_end")
+        colA, colB = st.columns(2)
+        start = colA.date_input("Start", key="form_start")
+        end   = colB.date_input("End",   key="form_end")
         start, end = ensure_range(start, end)
 
-        st.text_input("Title", key="form_title", placeholder="Item title")
+        st.text_input("Title",               key="form_title",    placeholder="Item title")
         st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
+
+        # Category dropdown INSIDE the form
+        choice = st.selectbox("Category", category_options, index=cat_index, key="form_category_choice")
+        new_cat_name = ""
+        if choice == "+ New…":
+            new_cat_name = st.text_input("New category name", key="form_new_category_name")
+
         st.selectbox("Bar color", PALETTE_OPTIONS, key="form_color_label")
 
-        b1,b2,b3 = st.columns(3)
-        add_clicked    = b1.form_submit_button("➕ Add item")
-        edit_clicked   = b2.form_submit_button("✏️ Edit item")
-        delete_clicked = b3.form_submit_button("🗑 Delete item")
+        # Buttons stacked vertically
+        add_clicked    = st.form_submit_button("➕ Add item",    use_container_width=True)
+        edit_clicked   = st.form_submit_button("✏️ Edit item",   use_container_width=True)
+        delete_clicked = st.form_submit_button("🗑 Delete item", use_container_width=True)
+
+    # ------ Actions ------
+    def _resolve_group_id_from_form():
+        """Return a group id based on the category widgets; create group if needed."""
+        # Existing category selected?
+        if st.session_state["form_category_choice"] != "+ New…":
+            name = st.session_state["form_category_choice"]
+            # map name -> id
+            for g in st.session_state["groups"]:
+                if g["content"] == name:
+                    return g["id"]
+            # Shouldn't happen, but fallback to create it
+            g = normalize_group({"content": name, "order": len(st.session_state["groups"])})
+            st.session_state["groups"].append(g)
+            return g["id"]
+        # New category
+        name = (st.session_state.get("form_new_category_name") or "").strip()
+        if not name:
+            return ""  # allow empty if user didn't type
+        # Reuse if exists; else create
+        for g in st.session_state["groups"]:
+            if g["content"] == name:
+                return g["id"]
+        g = normalize_group({"content": name, "order": len(st.session_state["groups"])})
+        st.session_state["groups"].append(g)
+        return g["id"]
 
     if add_clicked:
-        col = PALETTE_MAP[st.session_state["form_color_label"]]
-        gid = st.session_state.get("active_group_id","")
-        if not gid and st.session_state["groups"]:
-            gid = st.session_state["groups"][-1]["id"]
+        col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
+        gid = _resolve_group_id_from_form()
         item = normalize_item({
             "id": str(uuid.uuid4()),
             "content": st.session_state["form_title"],
@@ -149,19 +199,23 @@ with st.sidebar:
             "start": st.session_state["form_start"],
             "end":   st.session_state["form_end"],
             "group": gid,
-            "color": col,
-            "style": f"background:{col}; border-color:{col}",
+            "color": col_hex,
+            "style": f"background:{col_hex}; border-color:{col_hex}",
         })
         st.session_state["items"].append(item)
-        st.session_state["editing_item_id"] = item["id"]
-        st.success("Item added."); st.rerun()
+
+        # After adding, default picker back to "New item"
+        st.session_state["editing_item_id"] = ""
+        st.success("Item added.")
+        st.rerun()
 
     if edit_clicked:
         eid = st.session_state.get("editing_item_id","")
         if not eid:
-            st.warning("Select an item to edit.")
+            st.warning("Select an item to edit (top dropdown).")
         else:
-            col = PALETTE_MAP[st.session_state["form_color_label"]]
+            col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
+            gid = _resolve_group_id_from_form()
             for i,it in enumerate(st.session_state["items"]):
                 if str(it.get("id")) == str(eid):
                     st.session_state["items"][i] = normalize_item({
@@ -170,26 +224,29 @@ with st.sidebar:
                         "subtitle": st.session_state["form_subtitle"],
                         "start": st.session_state["form_start"],
                         "end":   st.session_state["form_end"],
-                        "group": st.session_state.get("active_group_id", it.get("group","")),
-                        "color": col,
-                        "style": f"background:{col}; border-color:{col}",
+                        "group": gid if gid != "" else it.get("group",""),
+                        "color": col_hex,
+                        "style": f"background:{col_hex}; border-color:{col_hex}",
                     })
                     break
-            st.success("Item updated."); st.rerun()
+            st.success("Item updated.")
+            st.rerun()
 
     if delete_clicked:
         eid = st.session_state.get("editing_item_id","")
         if not eid:
-            st.warning("Select an item to delete.")
+            st.warning("Select an item to delete (top dropdown).")
         else:
             st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
             st.session_state["editing_item_id"] = ""
-            st.success("Item deleted."); st.rerun()
+            st.success("Item deleted.")
+            st.rerun()
 
     st.divider()
     st.subheader("🧰 Utilities")
     if st.button("Reset (clear all)", type="secondary"):
-        reset_defaults(st.session_state); st.rerun()
+        reset_defaults(st.session_state)
+        st.rerun()
 
     exported = export_items_groups(st.session_state)
     st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
@@ -201,7 +258,8 @@ with st.sidebar:
         st.session_state["items"]  = [normalize_item(x) for x in data.get("items", [])]
         st.session_state["groups"] = [normalize_group(x) for x in data.get("groups", [])]
         st.session_state["editing_item_id"] = ""
-        st.success("Imported."); st.rerun()
+        st.success("Imported.")
+        st.rerun()
 
 # ----------------- MAIN -----------------
 st.title("Roadmap Timeline")
