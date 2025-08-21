@@ -1,214 +1,245 @@
-# --- Roadmap "Rescue" launcher: paints immediately, then diagnoses, then runs the app ---
+# app.py — simple & reliable orchestrator
 
-import os, sys, json, traceback
-from datetime import date, datetime
+import uuid
+from datetime import date
 import streamlit as st
 
-st.set_page_config(page_title="Roadmap – Rescue", page_icon="🗺️", layout="wide")
+from lib.styles import GLOBAL_CSS
+from lib.state import (
+    normalize_item, normalize_group, normalize_state,
+    reset_defaults, ensure_range, export_items_groups
+)
+from lib.timeline import render_timeline
 
-# 0) Always show something so you know the script is running
-st.title("🧭 Roadmap – Rescue Mode")
-st.caption("If you can read this, the script started. Next: quick diagnostics below.")
+# ----------------- Setup -----------------
+st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
+st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-# 1) Quick repo/ENV diagnostics (no third-party imports yet)
-with st.expander("🔎 Diagnostics (click to expand)", expanded=True):
-    st.write("**Working directory**:", os.getcwd())
-    st.write("**Python**:", sys.version)
-    st.write("**Sys.path (first 3)**:", sys.path[:3])
+# ----------------- Session bootstrap -----------------
+st.session_state.setdefault("items", [])
+st.session_state.setdefault("groups", [])
+st.session_state.setdefault("active_group_id", "")
+st.session_state.setdefault("editing_item_id", "")
 
-    # List top-level and lib/ contents to verify files are present
-    try:
-        toplevel = sorted(os.listdir("."))
-    except Exception as e:
-        toplevel = [f"(os.listdir('.') failed: {e})"]
-    st.write("**Repo root files**:", toplevel)
+# Normalize existing state (safe even if empty)
+# Some versions of normalize_state mutate in place; handle both patterns:
+ns = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
+if isinstance(ns, tuple):
+    st.session_state["items"], st.session_state["groups"] = ns
+else:
+    # old behavior: normalize_state(st.session_state)
+    pass
 
-    lib_exists = os.path.isdir("lib")
-    st.write("**lib/ exists?**", lib_exists)
-    if lib_exists:
-        try:
-            libfiles = sorted(os.listdir("lib"))
-        except Exception as e:
-            libfiles = [f"(os.listdir('lib') failed: {e})"]
-        st.write("**lib contents**:", libfiles)
-        st.caption("Tip: ensure `lib/__init__.py` exists (even empty) so Python treats it as a package.")
+# ---------- Pastel palette (10 fixed) ----------
+PALETTE = [
+    ("Lavender",  "#E9D5FF"),
+    ("Baby Blue", "#BFDBFE"),
+    ("Mint",      "#BBF7D0"),
+    ("Lemon",     "#FEF9C3"),
+    ("Peach",     "#FDE1D3"),
+    ("Blush",     "#FBCFE8"),
+    ("Sky",       "#E0F2FE"),
+    ("Mauve",     "#F5D0FE"),
+    ("Sage",      "#D1FAE5"),
+    ("Sand",      "#F5E7C6"),
+]
+PALETTE_MAP = {f"{name} ({hexcode})": hexcode for name, hexcode in PALETTE}
+PALETTE_OPTIONS = list(PALETTE_MAP.keys())
 
-# 2) Try to import your modules safely and show errors inline (not only in logs)
-imports_ok = False
-err = None
-try:
-    import importlib
-    styles   = importlib.import_module("lib.styles")
-    state    = importlib.import_module("lib.state")
-    timeline = importlib.import_module("lib.timeline")
-    sidebar  = importlib.import_module("lib.sidebar") if os.path.exists("lib/sidebar.py") else None
-    ids      = importlib.import_module("lib.ids") if os.path.exists("lib/ids.py") else None
-    debugmod = importlib.import_module("lib.debug") if os.path.exists("lib/debug.py") else None
-    imports_ok = True
-except Exception as e:
-    err = e
+# ---------- Helpers ----------
+def _find_item(iid: str):
+    for it in st.session_state["items"]:
+        if str(it.get("id")) == str(iid):
+            return it
+    return None
 
-if not imports_ok:
-    st.error("❌ Import error: your modules could not be imported.")
-    st.exception(err)
-    st.write(
-        "Common fixes:\n"
-        "- Verify your **Main file path** points to `app.py` in Streamlit Cloud settings.\n"
-        "- Make sure the `lib/` folder is committed to the same branch and contains your modules.\n"
-        "- Add an empty file `lib/__init__.py` to mark it as a package."
-    )
-    st.stop()
+def _prefill_form_from_item(item: dict):
+    """Set form fields in session_state BEFORE rendering the form widgets."""
+    st.session_state["form_title"] = item.get("content", "")
+    st.session_state["form_subtitle"] = item.get("subtitle", "")
+    # `normalize_item` keeps dates as date objects
+    st.session_state["form_start"] = item.get("start") or date.today()
+    st.session_state["form_end"]   = item.get("end") or date.today()
+    # sync category
+    gid = item.get("group", "")
+    if gid:
+        st.session_state["active_group_id"] = gid
+    # pick matching color label if available
+    chosen = next((lab for lab, hexv in PALETTE_MAP.items() if hexv == item.get("color")), None)
+    st.session_state["form_color_label"] = chosen or PALETTE_OPTIONS[0]
 
-# 3) Apply global CSS (now that imports work)
-st.markdown(styles.GLOBAL_CSS, unsafe_allow_html=True)
+def _ensure_form_defaults():
+    st.session_state.setdefault("form_title", "")
+    st.session_state.setdefault("form_subtitle", "")
+    st.session_state.setdefault("form_start", date.today())
+    st.session_state.setdefault("form_end", date.today())
+    st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
 
-# 4) Minimal helpers from your modules (fetched via the safe imports above)
-normalize_item = state.normalize_item
-normalize_group = state.normalize_group
-normalize_state = state.normalize_state
-reset_defaults = state.reset_defaults
-ensure_range = state.ensure_range
-export_items_groups = state.export_items_groups
+def _label_for_item(it, groups_by_id):
+    gname = groups_by_id.get(it.get("group",""), "")
+    title = it.get("content","(untitled)")
+    start = str(it.get("start",""))[:10]
+    short = str(it.get("id",""))[:6]
+    return f"{title} · {gname} · {start} · {short}"
 
-# 5) Session bootstrap (safe & minimal)
-session = st.session_state
-session.setdefault("items", [])
-session.setdefault("groups", [])
-session.setdefault("active_group_id", "")
-session.setdefault("editing_item_id", "")
-
-# Normalize
-try:
-    session["items"], session["groups"] = normalize_state(session.get("items"), session.get("groups"))
-except TypeError:
-    # in some earlier versions normalize_state mutated in-place; fallback
-    normalize_state(session)
-
-# 6) Sidebar form + reliable picker (no iframe interaction needed)
+# ----------------- SIDEBAR -----------------
 with st.sidebar:
     st.header("📅 Add / Edit")
 
-    # Category field (type to create)
-    group_names = {g["content"]: g["id"] for g in session["groups"]}
+    # Category field (type to pick-or-create)
+    group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
     new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
-    if new_group_name and new_group_name not in group_names:
-        g = normalize_group({"content": new_group_name, "order": len(session["groups"])})
-        session["groups"].append(g)
-        group_names[new_group_name] = g["id"]
-    active_group = group_names.get(new_group_name) if new_group_name else ""
 
-    # Reliable picker drives selection
-    labels = [f'{i.get("content") or "Untitled"} · {i.get("id","")[:6]}' for i in session["items"]]
-    ids_list = [i.get("id") for i in session["items"]]
-    picked_label = st.selectbox("Select existing", labels or ["(none)"])
-    picked_id = ids_list[labels.index(picked_label)] if labels and picked_label in labels else ""
+    # If user typed a name, make it active; create when missing
+    if new_group_name:
+        if new_group_name in group_names:
+            st.session_state["active_group_id"] = group_names[new_group_name]
+        else:
+            g = normalize_group({"content": new_group_name, "order": len(st.session_state["groups"])})
+            st.session_state["groups"].append(g)
+            st.session_state["active_group_id"] = g["id"]
 
-    def _find_item(iid):
-        for it in session["items"]:
-            if str(it.get("id")) == str(iid):
-                return it
-        return None
+    active_name = next((g["content"] for g in st.session_state["groups"]
+                        if g["id"] == st.session_state.get("active_group_id","")), "")
+    st.caption(f"Active category: **{active_name or '(none)'}**")
 
-    sel = _find_item(picked_id) if picked_id else None
+    # Reliable item picker (drives which item is edited/deleted)
+    groups_by_id = {g["id"]: g["content"] for g in st.session_state["groups"]}
+    options = [(it["id"], _label_for_item(it, groups_by_id))
+               for it in st.session_state["items"]
+               if it.get("type") != "background"]
+    labels = [lbl for _, lbl in options]
 
-    # Form fields (prefill when selection exists)
-    t_title = st.text_input("Title", sel.get("content","") if sel else "")
-    t_sub   = st.text_input("Subtitle (optional)", sel.get("subtitle","") if sel else "")
-    colA, colB = st.columns(2)
-    s_val = state._coerce_date(sel["start"]) if sel and sel.get("start") else date.today()
-    e_val = state._coerce_date(sel["end"])   if sel and sel.get("end")   else date.today()
-    s_date = colA.date_input("Start", value=s_val)
-    e_date = colB.date_input("End",   value=e_val)
-    s_date, e_date = ensure_range(s_date, e_date)
+    # Compute index from current editing_item_id (default to first if exists)
+    selected_idx = 0
+    if st.session_state.get("editing_item_id"):
+        for i,(iid,_) in enumerate(options):
+            if str(iid) == str(st.session_state["editing_item_id"]):
+                selected_idx = i
+                break
 
-    # Palette (pastel 10)
-    PALETTE = [
-        ("Lavender",  "#E9D5FF"),
-        ("Baby Blue", "#BFDBFE"),
-        ("Mint",      "#BBF7D0"),
-        ("Lemon",     "#FEF9C3"),
-        ("Peach",     "#FDE1D3"),
-        ("Blush",     "#FBCFE8"),
-        ("Sky",       "#E0F2FE"),
-        ("Mauve",     "#F5D0FE"),
-        ("Sage",      "#D1FAE5"),
-        ("Sand",      "#F5E7C6"),
-    ]
-    PALETTE_MAP = {f"{n} ({h})": h for n,h in PALETTE}
-    PALETTE_OPTIONS = list(PALETTE_MAP.keys())
-    default_label = next((lab for lab,hexv in PALETTE_MAP.items() if hexv==(sel or {}).get("color")), PALETTE_OPTIONS[0])
-    color_label = st.selectbox("Bar color", PALETTE_OPTIONS,
-                               index=PALETTE_OPTIONS.index(default_label) if default_label in PALETTE_OPTIONS else 0)
-    color_hex = PALETTE_MAP[color_label]
+    picked_label = st.selectbox("Select existing", labels or ["(none)"],
+                                index=selected_idx if labels else 0,
+                                key="picker_label")
 
-    c1, c2, c3 = st.columns(3)
-    if c1.button("➕ Add item"):
+    # Map label -> id (only if we have items)
+    picked_id = ""
+    if labels:
+        for iid, lbl in options:
+            if lbl == picked_label:
+                picked_id = iid
+                break
+
+    # If user changed selection, prefill form and remember the id
+    if picked_id and str(picked_id) != str(st.session_state.get("editing_item_id","")):
+        st.session_state["editing_item_id"] = str(picked_id)
+        _prefill_form_from_item(_find_item(picked_id))
+
+    # Ensure defaults exist BEFORE drawing the form
+    _ensure_form_defaults()
+
+    # Single form (prevents keystroke reruns/focus loss)
+    with st.form("item_form", clear_on_submit=False):
+        colA, colB = st.columns(2)
+        start = colA.date_input("Start", key="form_start")
+        end   = colB.date_input("End",   key="form_end")
+        start, end = ensure_range(start, end)
+
+        st.text_input("Title",               key="form_title",    placeholder="Item title")
+        st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
+
+        st.selectbox("Bar color", PALETTE_OPTIONS, key="form_color_label")
+
+        c1, c2, c3 = st.columns(3)
+        add_clicked    = c1.form_submit_button("➕ Add item")
+        edit_clicked   = c2.form_submit_button("✏️ Edit item")
+        delete_clicked = c3.form_submit_button("🗑 Delete item")
+
+    # ------ Actions ------
+    if add_clicked:
+        color_hex = PALETTE_MAP[st.session_state["form_color_label"]]
+        gid = st.session_state.get("active_group_id","")
+        # If no active group but we have existing groups, default to the last one
+        if not gid and st.session_state["groups"]:
+            gid = st.session_state["groups"][-1]["id"]
+
         item = normalize_item({
-            "content": t_title,
-            "subtitle": t_sub,
-            "start": s_date,
-            "end": e_date,
-            "group": active_group or (session["groups"][-1]["id"] if session["groups"] else ""),
+            "id": str(uuid.uuid4()),  # stable ID
+            "content": st.session_state["form_title"],
+            "subtitle": st.session_state["form_subtitle"],
+            "start": st.session_state["form_start"],
+            "end": st.session_state["form_end"],
+            "group": gid,
             "color": color_hex,
             "style": f"background:{color_hex}; border-color:{color_hex}",
         })
-        session["items"].append(item)
-        st.success("Item added")
+        st.session_state["items"].append(item)
+        st.session_state["editing_item_id"] = item["id"]
+        st.success("Item added.")
+        st.rerun()
 
-    if c2.button("✏️ Edit item"):
-        if not picked_id:
-            st.warning("Pick an existing item above.")
+    if edit_clicked:
+        eid = st.session_state.get("editing_item_id","")
+        if not eid:
+            st.warning("Select an item to edit (picker above).")
         else:
-            for ix, it in enumerate(session["items"]):
-                if str(it.get("id")) == str(picked_id):
+            color_hex = PALETTE_MAP[st.session_state["form_color_label"]]
+            for idx, it in enumerate(st.session_state["items"]):
+                if str(it.get("id")) == str(eid):
                     updated = normalize_item({
-                        "id": picked_id,
-                        "content": t_title,
-                        "subtitle": t_sub,
-                        "start": s_date,
-                        "end": e_date,
-                        "group": active_group or it.get("group",""),
+                        "id": eid,  # keep same id
+                        "content": st.session_state["form_title"],
+                        "subtitle": st.session_state["form_subtitle"],
+                        "start": st.session_state["form_start"],
+                        "end": st.session_state["form_end"],
+                        "group": st.session_state.get("active_group_id", it.get("group","")),
                         "color": color_hex,
                         "style": f"background:{color_hex}; border-color:{color_hex}",
                     })
-                    session["items"][ix] = updated
-                    st.success("Item updated")
+                    st.session_state["items"][idx] = updated
                     break
+            st.success("Item updated.")
+            st.rerun()
 
-    if c3.button("🗑 Delete item"):
-        if not picked_id:
-            st.warning("Pick an existing item above.")
+    if delete_clicked:
+        eid = st.session_state.get("editing_item_id","")
+        if not eid:
+            st.warning("Select an item to delete (picker above).")
         else:
-            session["items"] = [it for it in session["items"] if str(it.get("id")) != str(picked_id)]
-            st.success("Item deleted")
+            st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
+            st.session_state["editing_item_id"] = ""
+            st.success("Item deleted.")
+            st.rerun()
 
     st.divider()
     st.subheader("🧰 Utilities")
     if st.button("Reset (clear all)", type="secondary"):
-        reset_defaults(session)
-        (st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun())
+        reset_defaults(st.session_state)
+        st.rerun()
 
-    exported = export_items_groups(session)
-    st.download_button("⬇️ Export JSON", exported, file_name="roadmap.json", mime="application/json")
+    exported = export_items_groups(st.session_state)
+    st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
 
     uploaded = st.file_uploader("Import JSON", type=["json"])
-    if uploaded:
+    if uploaded is not None:
+        import json
         payload = json.loads(uploaded.read().decode("utf-8"))
-        session["items"] = [state.normalize_item(x) for x in payload.get("items", [])]
-        session["groups"] = [state.normalize_group(x) for x in payload.get("groups", [])]
+        st.session_state["items"] = [normalize_item(x) for x in payload.get("items", [])]
+        st.session_state["groups"] = [normalize_group(x) for x in payload.get("groups", [])]
+        st.session_state["editing_item_id"] = ""
         st.success("Imported.")
-        (st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun())
+        st.rerun()
 
-# 7) Main area with a very safe timeline render (purely visual)
-st.header("Roadmap Timeline")
-selected_names = st.multiselect("Filter categories", [g["content"] for g in session["groups"]])
-selected_ids = {g["id"] for g in session["groups"] if g["content"] in selected_names} if selected_names else set()
-items_view  = [i for i in session["items"]  if not selected_ids or i.get("group","") in selected_ids]
-groups_view = [g for g in session["groups"] if not selected_ids or g["id"] in selected_ids]
+# ----------------- MAIN -----------------
+st.title("Roadmap Timeline")
 
-if not items_view:
+if not st.session_state["items"]:
     st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
 else:
-    # timeline.render_timeline uses vis-timeline CDN; even if the CDN stalls,
-    # you will still see the page and sidebar since we already rendered above.
-    timeline.render_timeline(items_view, groups_view, selected_id="")
+    selected_names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]])
+    selected_ids = {g["id"] for g in st.session_state["groups"] if g["content"] in selected_names} if selected_names else set()
+
+    items_view  = [i for i in st.session_state["items"]  if not selected_ids or i.get("group","") in selected_ids]
+    groups_view = [g for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
+
+    render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id",""))
