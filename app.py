@@ -1,245 +1,154 @@
-# app.py — simple & reliable orchestrator
+# lib/timeline.py — dynamic window: longest event ± buffer
 
-import uuid
-from datetime import date
-import streamlit as st
+import json
+from datetime import date, datetime, timedelta
+import streamlit.components.v1 as components
 
-from lib.styles import GLOBAL_CSS
-from lib.state import (
-    normalize_item, normalize_group, normalize_state,
-    reset_defaults, ensure_range, export_items_groups
-)
-from lib.timeline import render_timeline
+# CDN assets
+_VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
+_VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
+_FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
 
-# ----------------- Setup -----------------
-st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
-st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+# Tuning knobs
+_BUFFER_PERCENT = 0.15   # 15% of the longest event’s span
+_MIN_BUFFER_DAYS = 14    # but at least this many days
 
-# ----------------- Session bootstrap -----------------
-st.session_state.setdefault("items", [])
-st.session_state.setdefault("groups", [])
-st.session_state.setdefault("active_group_id", "")
-st.session_state.setdefault("editing_item_id", "")
+def _to_date(v):
+    if isinstance(v, date): return v
+    if isinstance(v, str) and v:
+        return datetime.fromisoformat(v[:10]).date()
+    return date.today()
 
-# Normalize existing state (safe even if empty)
-# Some versions of normalize_state mutate in place; handle both patterns:
-ns = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
-if isinstance(ns, tuple):
-    st.session_state["items"], st.session_state["groups"] = ns
-else:
-    # old behavior: normalize_state(st.session_state)
-    pass
+def _dynamic_window(items):
+    """Find the single longest event and return (start, end) expanded by buffer."""
+    best = None
+    best_span = -1
+    for it in items:
+        if it.get("type") == "background":  # ignore bg rows
+            continue
+        s = _to_date(it.get("start"))
+        e = _to_date(it.get("end") or it.get("start"))
+        if e < s:
+            s, e = e, s
+        span_days = max(1, (e - s).days)
+        if span_days > best_span:
+            best_span = span_days
+            best = (s, e)
 
-# ---------- Pastel palette (10 fixed) ----------
-PALETTE = [
-    ("Lavender",  "#E9D5FF"),
-    ("Baby Blue", "#BFDBFE"),
-    ("Mint",      "#BBF7D0"),
-    ("Lemon",     "#FEF9C3"),
-    ("Peach",     "#FDE1D3"),
-    ("Blush",     "#FBCFE8"),
-    ("Sky",       "#E0F2FE"),
-    ("Mauve",     "#F5D0FE"),
-    ("Sage",      "#D1FAE5"),
-    ("Sand",      "#F5E7C6"),
-]
-PALETTE_MAP = {f"{name} ({hexcode})": hexcode for name, hexcode in PALETTE}
-PALETTE_OPTIONS = list(PALETTE_MAP.keys())
+    if not best:
+        # No items: show a small symmetric window around today
+        t = date.today()
+        buf = max(_MIN_BUFFER_DAYS, 30)
+        return (t - timedelta(days=buf), t + timedelta(days=buf))
 
-# ---------- Helpers ----------
-def _find_item(iid: str):
-    for it in st.session_state["items"]:
-        if str(it.get("id")) == str(iid):
-            return it
-    return None
+    s, e = best
+    buf = max(_MIN_BUFFER_DAYS, int(round(best_span * _BUFFER_PERCENT)))
+    return (s - timedelta(days=buf), e + timedelta(days=buf))
 
-def _prefill_form_from_item(item: dict):
-    """Set form fields in session_state BEFORE rendering the form widgets."""
-    st.session_state["form_title"] = item.get("content", "")
-    st.session_state["form_subtitle"] = item.get("subtitle", "")
-    # `normalize_item` keeps dates as date objects
-    st.session_state["form_start"] = item.get("start") or date.today()
-    st.session_state["form_end"]   = item.get("end") or date.today()
-    # sync category
-    gid = item.get("group", "")
-    if gid:
-        st.session_state["active_group_id"] = gid
-    # pick matching color label if available
-    chosen = next((lab for lab, hexv in PALETTE_MAP.items() if hexv == item.get("color")), None)
-    st.session_state["form_color_label"] = chosen or PALETTE_OPTIONS[0]
+def render_timeline(items, groups, selected_id: str = ""):
+    rows = max(1, len(groups))
+    height_px = max(260, 80 * rows + 120)
 
-def _ensure_form_defaults():
-    st.session_state.setdefault("form_title", "")
-    st.session_state.setdefault("form_subtitle", "")
-    st.session_state.setdefault("form_start", date.today())
-    st.session_state.setdefault("form_end", date.today())
-    st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
+    # Compute dynamic initial window from the longest event
+    win_start, win_end = _dynamic_window(items)
+    win_start_s = win_start.isoformat()
+    win_end_s   = win_end.isoformat()
 
-def _label_for_item(it, groups_by_id):
-    gname = groups_by_id.get(it.get("group",""), "")
-    title = it.get("content","(untitled)")
-    start = str(it.get("start",""))[:10]
-    short = str(it.get("id",""))[:6]
-    return f"{title} · {gname} · {start} · {short}"
+    # Light background per row spanning the chosen window
+    bg_items = [{
+        "id": f"bg-{g['id']}",
+        "group": g["id"],
+        "start": win_start_s,
+        "end": win_end_s,
+        "type": "background",
+        "className": "row-bg"
+    } for g in groups]
 
-# ----------------- SIDEBAR -----------------
-with st.sidebar:
-    st.header("📅 Add / Edit")
+    # Serialize (support date objects via default=str)
+    items_json  = json.dumps(items + bg_items, default=str)
+    groups_json = json.dumps(groups, default=str)
+    selected_js = json.dumps(selected_id or "")
 
-    # Category field (type to pick-or-create)
-    group_names = {g["content"]: g["id"] for g in st.session_state["groups"]}
-    new_group_name = st.text_input("Category", placeholder="e.g., Germany · Residential")
+    html = f"""
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="{_FONT}" rel="stylesheet">
+    <link rel="stylesheet" href="{_VIS_CSS}"/>
+    <style>
+      :root {{ --font: 'Montserrat', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, sans-serif; }}
+      body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
+      #timeline {{ height:{height_px}px; background:#fff; border-radius:14px; border:1px solid #e7e9f2 }}
+      .row-bg {{ background: rgba(37,99,235,.05) }}
+      .vis-time-axis .text {{ font-size:12px; font-weight:500 }}
+      .vis-labelset .vis-label .vis-inner {{ font-weight:600 }}
+      .vis-item .vis-item-content {{ line-height:1.15 }}
+      .ttl {{ font-weight:600 }}
+      .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
+      .vis-item.vis-selected {{ box-shadow: 0 0 0 2px rgba(37,99,235,.7) inset, 0 0 0 2px rgba(37,99,235,.25); border-color:#2563eb !important }}
 
-    # If user typed a name, make it active; create when missing
-    if new_group_name:
-        if new_group_name in group_names:
-            st.session_state["active_group_id"] = group_names[new_group_name]
-        else:
-            g = normalize_group({"content": new_group_name, "order": len(st.session_state["groups"])})
-            st.session_state["groups"].append(g)
-            st.session_state["active_group_id"] = g["id"]
+      .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
+      .toolbar button {{
+        padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer
+      }}
+      .toolbar button:hover {{ background:#f3f4f6 }}
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <button id="btn-fit">Fit all</button>
+      <button id="btn-window">Show longest ± buffer</button>
+      <button id="btn-today">Today</button>
+    </div>
+    <div id="timeline"></div>
 
-    active_name = next((g["content"] for g in st.session_state["groups"]
-                        if g["id"] == st.session_state.get("active_group_id","")), "")
-    st.caption(f"Active category: **{active_name or '(none)'}**")
+    <script src="{_VIS_JS}"></script>
+    <script>
+      function esc(s) {{
+        return String(s ?? "")
+          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+      }}
 
-    # Reliable item picker (drives which item is edited/deleted)
-    groups_by_id = {g["id"]: g["content"] for g in st.session_state["groups"]}
-    options = [(it["id"], _label_for_item(it, groups_by_id))
-               for it in st.session_state["items"]
-               if it.get("type") != "background"]
-    labels = [lbl for _, lbl in options]
+      const ITEMS  = {items_json};
+      const GROUPS = {groups_json};
+      const selId  = {selected_js};
+      const container = document.getElementById('timeline');
 
-    # Compute index from current editing_item_id (default to first if exists)
-    selected_idx = 0
-    if st.session_state.get("editing_item_id"):
-        for i,(iid,_) in enumerate(options):
-            if str(iid) == str(st.session_state["editing_item_id"]):
-                selected_idx = i
-                break
+      const options = {{
+        orientation: 'top',
+        margin: {{ item: 8, axis: 12 }},
+        start: '{win_start_s}',   // initial window (dynamic)
+        end:   '{win_end_s}',
+        template: function(item) {{
+          if (item.type === 'background') return '';
+          const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
+          const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
+          return t + s;
+        }},
+      }};
 
-    picked_label = st.selectbox("Select existing", labels or ["(none)"],
-                                index=selected_idx if labels else 0,
-                                key="picker_label")
+      const timeline = new vis.Timeline(container, ITEMS, GROUPS, options);
 
-    # Map label -> id (only if we have items)
-    picked_id = ""
-    if labels:
-        for iid, lbl in options:
-            if lbl == picked_label:
-                picked_id = iid
-                break
+      // Optional: preselect item (no auto-focus to avoid big jumps)
+      if (selId) {{
+        try {{ timeline.setSelection([selId], {{ focus:false }}); }} catch(e) {{}}
+      }}
 
-    # If user changed selection, prefill form and remember the id
-    if picked_id and str(picked_id) != str(st.session_state.get("editing_item_id","")):
-        st.session_state["editing_item_id"] = str(picked_id)
-        _prefill_form_from_item(_find_item(picked_id))
-
-    # Ensure defaults exist BEFORE drawing the form
-    _ensure_form_defaults()
-
-    # Single form (prevents keystroke reruns/focus loss)
-    with st.form("item_form", clear_on_submit=False):
-        colA, colB = st.columns(2)
-        start = colA.date_input("Start", key="form_start")
-        end   = colB.date_input("End",   key="form_end")
-        start, end = ensure_range(start, end)
-
-        st.text_input("Title",               key="form_title",    placeholder="Item title")
-        st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
-
-        st.selectbox("Bar color", PALETTE_OPTIONS, key="form_color_label")
-
-        c1, c2, c3 = st.columns(3)
-        add_clicked    = c1.form_submit_button("➕ Add item")
-        edit_clicked   = c2.form_submit_button("✏️ Edit item")
-        delete_clicked = c3.form_submit_button("🗑 Delete item")
-
-    # ------ Actions ------
-    if add_clicked:
-        color_hex = PALETTE_MAP[st.session_state["form_color_label"]]
-        gid = st.session_state.get("active_group_id","")
-        # If no active group but we have existing groups, default to the last one
-        if not gid and st.session_state["groups"]:
-            gid = st.session_state["groups"][-1]["id"]
-
-        item = normalize_item({
-            "id": str(uuid.uuid4()),  # stable ID
-            "content": st.session_state["form_title"],
-            "subtitle": st.session_state["form_subtitle"],
-            "start": st.session_state["form_start"],
-            "end": st.session_state["form_end"],
-            "group": gid,
-            "color": color_hex,
-            "style": f"background:{color_hex}; border-color:{color_hex}",
-        })
-        st.session_state["items"].append(item)
-        st.session_state["editing_item_id"] = item["id"]
-        st.success("Item added.")
-        st.rerun()
-
-    if edit_clicked:
-        eid = st.session_state.get("editing_item_id","")
-        if not eid:
-            st.warning("Select an item to edit (picker above).")
-        else:
-            color_hex = PALETTE_MAP[st.session_state["form_color_label"]]
-            for idx, it in enumerate(st.session_state["items"]):
-                if str(it.get("id")) == str(eid):
-                    updated = normalize_item({
-                        "id": eid,  # keep same id
-                        "content": st.session_state["form_title"],
-                        "subtitle": st.session_state["form_subtitle"],
-                        "start": st.session_state["form_start"],
-                        "end": st.session_state["form_end"],
-                        "group": st.session_state.get("active_group_id", it.get("group","")),
-                        "color": color_hex,
-                        "style": f"background:{color_hex}; border-color:{color_hex}",
-                    })
-                    st.session_state["items"][idx] = updated
-                    break
-            st.success("Item updated.")
-            st.rerun()
-
-    if delete_clicked:
-        eid = st.session_state.get("editing_item_id","")
-        if not eid:
-            st.warning("Select an item to delete (picker above).")
-        else:
-            st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
-            st.session_state["editing_item_id"] = ""
-            st.success("Item deleted.")
-            st.rerun()
-
-    st.divider()
-    st.subheader("🧰 Utilities")
-    if st.button("Reset (clear all)", type="secondary"):
-        reset_defaults(st.session_state)
-        st.rerun()
-
-    exported = export_items_groups(st.session_state)
-    st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
-
-    uploaded = st.file_uploader("Import JSON", type=["json"])
-    if uploaded is not None:
-        import json
-        payload = json.loads(uploaded.read().decode("utf-8"))
-        st.session_state["items"] = [normalize_item(x) for x in payload.get("items", [])]
-        st.session_state["groups"] = [normalize_group(x) for x in payload.get("groups", [])]
-        st.session_state["editing_item_id"] = ""
-        st.success("Imported.")
-        st.rerun()
-
-# ----------------- MAIN -----------------
-st.title("Roadmap Timeline")
-
-if not st.session_state["items"]:
-    st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
-else:
-    selected_names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]])
-    selected_ids = {g["id"] for g in st.session_state["groups"] if g["content"] in selected_names} if selected_names else set()
-
-    items_view  = [i for i in st.session_state["items"]  if not selected_ids or i.get("group","") in selected_ids]
-    groups_view = [g for g in st.session_state["groups"] if not selected_ids or g["id"] in selected_ids]
-
-    render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id",""))
+      // Toolbar actions
+      document.getElementById('btn-fit').onclick = () => {{
+        try {{ timeline.fit({{ animation: true }}); }} catch(e){{}}
+      }};
+      document.getElementById('btn-window').onclick = () => {{
+        try {{ timeline.setWindow('{win_start_s}', '{win_end_s}', {{ animation: true }}); }} catch(e){{}}
+      }};
+      document.getElementById('btn-today').onclick = () => {{
+        try {{ timeline.moveTo(new Date(), {{ animation: true }}); }} catch(e){{}}
+      }};
+    </script>
+  </body>
+</html>
+    """
+    components.html(html, height=height_px + 52, scrolling=False)
