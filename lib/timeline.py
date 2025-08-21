@@ -2,7 +2,7 @@ import json
 from datetime import date, timedelta
 import streamlit.components.v1 as components
 
-# CDN assets
+# Assets
 _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
 _FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
@@ -11,21 +11,24 @@ def render_timeline(items, groups, selected_id: str = ""):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
-    # Dynamic min date: at most 1 year ago; cap end to 2028
+    # Clamp window: at most ~1 year back; end capped at 2028-12-31
     min_date = (date.today() - timedelta(days=365)).isoformat()
-    cap_end  = "2028-12-31"
+    max_date = "2028-12-31"
 
-    # Background per row (light tint)
+    # Light background per group
     bg_items = [{
-        "id": f"bg-{g['id']}", "group": g["id"],
-        "start": min_date, "end": cap_end, "type": "background",
+        "id": f"bg-{g['id']}",
+        "group": g["id"],
+        "start": min_date,
+        "end": max_date,
+        "type": "background",
         "className": "row-bg"
     } for g in groups]
 
-    payload_items  = items + bg_items
-    items_json  = json.dumps(payload_items)
-    groups_json = json.dumps(groups)
-    selected_id_js = json.dumps(selected_id or "")
+    payload_items = items + bg_items
+    items_json  = json.dumps(payload_items, default=str)
+    groups_json = json.dumps(groups, default=str)
+    selected_js = json.dumps(selected_id or "")
 
     html = f"""
 <!doctype html>
@@ -44,7 +47,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       .vis-labelset .vis-label .vis-inner {{ font-weight:600 }}
       .vis-item .vis-item-content {{ line-height:1.15 }}
       .ttl {{ font-weight:600 }}
-      .sub {{ font-size:12px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
+      .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
       .vis-item.vis-selected {{ box-shadow: 0 0 0 2px rgba(37,99,235,.7) inset, 0 0 0 2px rgba(37,99,235,.25); border-color:#2563eb !important }}
     </style>
   </head>
@@ -58,15 +61,16 @@ def render_timeline(items, groups, selected_id: str = ""):
           .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
       }}
 
-      const items  = new vis.DataSet({items_json});
-      const groups = new vis.DataSet({groups_json});
+      const ITEMS  = {items_json};
+      const GROUPS = {groups_json};
       const container = document.getElementById('timeline');
+
       const options = {{
         stack: true,
         horizontalScroll: true,
         zoomKey: 'ctrlKey',
         min: '{min_date}',
-        max: '{cap_end}',
+        max: '{max_date}',
         orientation: 'top',
         showCurrentTime: true,
         margin: {{ item: 8, axis: 12 }},
@@ -77,12 +81,10 @@ def render_timeline(items, groups, selected_id: str = ""):
           return t + s;
         }},
       }};
-      const timeline = new vis.Timeline(container, items, groups, options);
+      const timeline = new vis.Timeline(container, ITEMS, GROUPS, options);
 
-      const sel = {selected_id_js};
-      if (sel) {{
-        try {{ timeline.setSelection([sel], {{ focus: false }}); }} catch (e) {{}}
-      }}
+      const pre = {selected_js};
+      if (pre) {{ try {{ timeline.setSelection([pre], {{ focus:false }}); }} catch(e) {{}} }}
       try {{ timeline.fit({{ animation: true }}); }} catch (e) {{}}
     </script>
   </body>
