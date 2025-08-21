@@ -1,3 +1,5 @@
+# app.py — simple & reliable orchestrator (with normalize_state signature guard)
+
 import uuid
 from datetime import date
 import streamlit as st
@@ -9,28 +11,45 @@ from lib.state import (
 )
 from lib.timeline import render_timeline
 
+# ----------------- Setup -----------------
 st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-# --- session bootstrap ---
+# ----------------- Session bootstrap -----------------
 st.session_state.setdefault("items", [])
 st.session_state.setdefault("groups", [])
 st.session_state.setdefault("active_group_id", "")
 st.session_state.setdefault("editing_item_id", "")
 
-ns = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
-if isinstance(ns, tuple):
-    st.session_state["items"], st.session_state["groups"] = ns
+# Normalize existing state (works with both normalize_state signatures)
+try:
+    # Preferred: function that takes the whole session_state dict
+    res = normalize_state(st.session_state)
+    if isinstance(res, tuple):
+        st.session_state["items"], st.session_state["groups"] = res
+except TypeError:
+    # Fallback: function that takes (items, groups) and returns a tuple
+    res = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
+    if isinstance(res, tuple):
+        st.session_state["items"], st.session_state["groups"] = res
 
-# --- palette ---
+# ---------- Pastel palette (10 fixed) ----------
 PALETTE = [
-    ("Lavender",  "#E9D5FF"), ("Baby Blue", "#BFDBFE"), ("Mint", "#BBF7D0"),
-    ("Lemon", "#FEF9C3"), ("Peach", "#FDE1D3"), ("Blush", "#FBCFE8"),
-    ("Sky", "#E0F2FE"), ("Mauve", "#F5D0FE"), ("Sage", "#D1FAE5"), ("Sand", "#F5E7C6"),
+    ("Lavender",  "#E9D5FF"),
+    ("Baby Blue", "#BFDBFE"),
+    ("Mint",      "#BBF7D0"),
+    ("Lemon",     "#FEF9C3"),
+    ("Peach",     "#FDE1D3"),
+    ("Blush",     "#FBCFE8"),
+    ("Sky",       "#E0F2FE"),
+    ("Mauve",     "#F5D0FE"),
+    ("Sage",      "#D1FAE5"),
+    ("Sand",      "#F5E7C6"),
 ]
-PALETTE_MAP = {f"{n} ({h})": h for n,h in PALETTE}
+PALETTE_MAP = {f"{name} ({hexcode})": hexcode for name, hexcode in PALETTE}
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
 
+# ---------- Helpers ----------
 def _find_item(iid: str):
     for it in st.session_state["items"]:
         if str(it.get("id")) == str(iid):
@@ -42,9 +61,12 @@ def _prefill_from_item(it: dict):
     st.session_state["form_subtitle"] = it.get("subtitle","")
     st.session_state["form_start"] = it.get("start") or date.today()
     st.session_state["form_end"]   = it.get("end") or date.today()
-    if it.get("group"): st.session_state["active_group_id"] = it["group"]
+    if it.get("group"):
+        st.session_state["active_group_id"] = it["group"]
     for label, hexv in PALETTE_MAP.items():
-        if hexv == it.get("color"): st.session_state["form_color_label"] = label; break
+        if hexv == it.get("color"):
+            st.session_state["form_color_label"] = label
+            break
 
 def _ensure_form_defaults():
     st.session_state.setdefault("form_title","")
@@ -53,7 +75,14 @@ def _ensure_form_defaults():
     st.session_state.setdefault("form_end",   date.today())
     st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
 
-# --- sidebar ---
+def _label_for_item(it, groups_by_id):
+    gname = groups_by_id.get(it.get("group",""), "")
+    title = it.get("content","(untitled)")
+    start = str(it.get("start",""))[:10]
+    short = str(it.get("id",""))[:6]
+    return f"{title} · {gname} · {start} · {short}"
+
+# ----------------- SIDEBAR -----------------
 with st.sidebar:
     st.header("📅 Add / Edit")
 
@@ -74,8 +103,9 @@ with st.sidebar:
 
     # Picker (reliable selection for edit/delete)
     gids = {g["id"]: g["content"] for g in st.session_state["groups"]}
-    opts = [(it["id"], f'{it.get("content","(untitled)")} · {gids.get(it.get("group",""),"")} · {str(it.get("start",""))[:10]} · {str(it.get("id",""))[:6]}')
-            for it in st.session_state["items"] if it.get("type")!="background"]
+    opts = [(it["id"], _label_for_item(it, gids))
+            for it in st.session_state["items"]
+            if it.get("type")!="background"]
     labels = [lbl for _,lbl in opts]
 
     current_idx = 0
@@ -128,7 +158,8 @@ with st.sidebar:
 
     if edit_clicked:
         eid = st.session_state.get("editing_item_id","")
-        if not eid: st.warning("Select an item to edit."); 
+        if not eid:
+            st.warning("Select an item to edit.")
         else:
             col = PALETTE_MAP[st.session_state["form_color_label"]]
             for i,it in enumerate(st.session_state["items"]):
@@ -148,7 +179,8 @@ with st.sidebar:
 
     if delete_clicked:
         eid = st.session_state.get("editing_item_id","")
-        if not eid: st.warning("Select an item to delete.")
+        if not eid:
+            st.warning("Select an item to delete.")
         else:
             st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
             st.session_state["editing_item_id"] = ""
@@ -171,7 +203,7 @@ with st.sidebar:
         st.session_state["editing_item_id"] = ""
         st.success("Imported."); st.rerun()
 
-# --- main ---
+# ----------------- MAIN -----------------
 st.title("Roadmap Timeline")
 
 if not st.session_state["items"]:
