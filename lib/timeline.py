@@ -48,9 +48,7 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     items_json  = json.dumps(items + bg, default=str)
     groups_json = json.dumps(groups, default=str)
-    selected_js = json.dumps(selected_id or "")
 
-    # HTML UI
     html = f"""
 <!doctype html>
 <html>
@@ -69,17 +67,14 @@ def render_timeline(items, groups, selected_id: str = ""):
     .vis-item .vis-item-content {{ line-height:1.15 }}
     .ttl {{ font-weight:600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
-    .vis-item.vis-selected {{ box-shadow: 0 0 0 2px rgba(37,99,235,.7) inset, 0 0 0 2px rgba(37,99,235,.25); border-color:#2563eb !important }}
-    .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
-    .toolbar button {{ padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer }}
-    .toolbar button:hover {{ background:#f3f4f6 }}
+    /* no selected styling since selection is disabled */
   </style>
 </head>
 <body>
-  <div class="toolbar">
-    <button id="fit">Fit all</button>
-    <button id="win">Show longest ± buffer</button>
-    <button id="today">Today</button>
+  <div class="toolbar" style="display:flex; gap:8px; margin:8px 0 12px">
+    <button id="fit"   style="padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer">Fit all</button>
+    <button id="win"   style="padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer">Show longest ± buffer</button>
+    <button id="today" style="padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer">Today</button>
   </div>
   <div id="timeline"></div>
 
@@ -93,7 +88,6 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     const ITEMS  = {items_json};
     const GROUPS = {groups_json};
-    const SEL    = {selected_js};
 
     const container = document.getElementById('timeline');
     const options = {{
@@ -101,6 +95,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       margin: {{ item: 8, axis: 12 }},
       start: '{ws}',
       end:   '{we}',
+      selectable: false,      // <-- disable click/tap selection
       template: function(item) {{
         if (item.type === 'background') return '';
         const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
@@ -110,11 +105,11 @@ def render_timeline(items, groups, selected_id: str = ""):
     }};
 
     const tl = new vis.Timeline(container, ITEMS, GROUPS, options);
-    if (SEL) {{ try {{ tl.setSelection([SEL], {{ focus:false }}); }} catch(e) {{}} }}
 
-    document.getElementById('fit').onclick  = () => {{ try {{ tl.fit({{animation:true}}); }} catch(e){{}} }};
-    document.getElementById('win').onclick  = () => {{ try {{ tl.setWindow('{ws}','{we}',{{animation:true}}); }} catch(e){{}} }};
-    document.getElementById('today').onclick= () => {{ try {{ tl.moveTo(new Date(), {{animation:true}}); }} catch(e){{}} }};
+    // Toolbar buttons
+    document.getElementById('fit').onclick   = () => {{ try {{ tl.fit({{animation:true}}); }} catch(e){{}} }};
+    document.getElementById('win').onclick   = () => {{ try {{ tl.setWindow('{ws}','{we}',{{animation:true}}); }} catch(e){{}} }};
+    document.getElementById('today').onclick = () => {{ try {{ tl.moveTo(new Date(), {{animation:true}}); }} catch(e){{}} }};
   </script>
 </body>
 </html>
