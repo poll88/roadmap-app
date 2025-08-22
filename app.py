@@ -1,4 +1,4 @@
-# app.py — reliable edit + logging + safe prefill-on-selection-change
+# app.py — one-box category (type to reuse or create), reliable edit, with logs
 
 import uuid
 import logging
@@ -23,8 +23,7 @@ st.session_state.setdefault("items", [])
 st.session_state.setdefault("groups", [])
 st.session_state.setdefault("active_group_id", "")
 st.session_state.setdefault("editing_item_id", "")
-# track picker to detect selection changes
-st.session_state.setdefault("_last_picker_id", "")
+st.session_state.setdefault("_last_picker_id", "")  # to detect selection changes
 
 # Be tolerant to either normalize_state signature
 try:
@@ -58,8 +57,8 @@ def _ensure_form_defaults():
     st.session_state.setdefault("form_start", date.today())
     st.session_state.setdefault("form_end",   date.today())
     st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
-    st.session_state.setdefault("form_category_choice", "+ New…")
-    st.session_state.setdefault("form_new_category_name","")
+    # one-box category field
+    st.session_state.setdefault("form_category","")
 
 def _prefill_form_from_item(it: dict, groups_by_id: dict):
     """Prefill form *only when selection changes*."""
@@ -72,15 +71,11 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
         if hexv == it.get("color"):
             st.session_state["form_color_label"] = label
             break
-    # category -> dropdown default
+    # category (text box holds the category name)
     gid = it.get("group")
-    if gid and gid in groups_by_id:
-        st.session_state["form_category_choice"] = groups_by_id[gid]
-        st.session_state["form_new_category_name"] = ""
+    st.session_state["form_category"] = groups_by_id.get(gid, "") if gid else ""
+    if gid:
         st.session_state["active_group_id"] = gid
-    else:
-        st.session_state["form_category_choice"] = "+ New…"
-        st.session_state["form_new_category_name"] = ""
 
 def _label_for_item(it, groups_by_id):
     gname = groups_by_id.get(it.get("group",""), "")
@@ -89,26 +84,33 @@ def _label_for_item(it, groups_by_id):
     short = str(it.get("id",""))[:6]
     return f"{title} · {gname} · {start} · {short}"
 
-def _resolve_group_id_from_form():
-    """Return group id based on the category widgets; create if needed."""
-    if st.session_state["form_category_choice"] != "+ New…":
-        name = st.session_state["form_category_choice"]
-        for g in st.session_state["groups"]:
-            if g["content"] == name:
-                return g["id"]
-        g = normalize_group({"content": name, "order": len(st.session_state["groups"])})
-        st.session_state["groups"].append(g)
-        return g["id"]
-    # New…
-    name = (st.session_state.get("form_new_category_name") or "").strip()
+def _resolve_group_id_from_text(category_text: str) -> str:
+    """
+    Given a free-typed category name, return an existing group id (case-insensitive)
+    or create a new group and return its id. Empty text -> '' (no group).
+    """
+    name = (category_text or "").strip()
     if not name:
-        return ""  # allow empty
+        return ""
+
+    # try case-insensitive match against existing names
     for g in st.session_state["groups"]:
-        if g["content"] == name:
+        if g["content"].lower() == name.lower():
             return g["id"]
+
+    # no match -> create
     g = normalize_group({"content": name, "order": len(st.session_state["groups"])})
     st.session_state["groups"].append(g)
+    LOG.info("Created new category name=%r id=%s", name, g["id"])
     return g["id"]
+
+def _suggest_categories(query: str, k=5):
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    hits = [g["content"] for g in st.session_state["groups"] if q in g["content"].lower()]
+    # ensure stable order: by position then name
+    return hits[:k]
 
 # ----------------- SIDEBAR -----------------
 with st.sidebar:
@@ -131,9 +133,8 @@ with st.sidebar:
 
     pick = st.selectbox("Item", picker_options, index=default_idx, key="picker_label")
 
-    # --- Selection change handling (NO unintended prefill on rerun) ---
+    # --- Selection change handling (no unintended prefill on rerun) ---
     if pick == PICK_NEW:
-        # only clear when switching to NEW from an existing selection
         if st.session_state.get("_last_picker_id"):
             LOG.info("Picker -> NEW (was %s)", st.session_state["_last_picker_id"])
             st.session_state["editing_item_id"] = ""
@@ -148,15 +149,10 @@ with st.sidebar:
             st.session_state["_last_picker_id"] = str(sel_id)
             _ensure_form_defaults()
             _prefill_form_from_item(_find_item(sel_id), groups_by_id)
-        # else: selection unchanged; DO NOT prefill — keep user's unsaved edits in the form
+        # else unchanged: keep user's typed edits
 
-    # ---- form with category dropdown inside ----
+    # ---- one-box category + the rest of the form ----
     _ensure_form_defaults()
-    existing_categories = [g["content"] for g in st.session_state["groups"]]
-    category_options = ["+ New…"] + existing_categories
-    cat_index = category_options.index(st.session_state["form_category_choice"]) \
-                if st.session_state["form_category_choice"] in category_options else 0
-
     with st.form("item_form", clear_on_submit=False):
         colA, colB = st.columns(2)
         start = colA.date_input("Start", key="form_start")
@@ -166,9 +162,13 @@ with st.sidebar:
         st.text_input("Title", key="form_title", placeholder="Item title")
         st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
 
-        choice = st.selectbox("Category", category_options, index=cat_index, key="form_category_choice")
-        if choice == "+ New…":
-            st.text_input("New category name", key="form_new_category_name")
+        # Single category box (type to reuse/create)
+        st.text_input("Category", key="form_category", placeholder="Type to select or create")
+
+        # Tiny inline suggestions (not a second widget)
+        sugg = _suggest_categories(st.session_state.get("form_category",""), k=5)
+        if sugg:
+            st.caption("Suggestions: " + " · ".join(sugg))
 
         st.selectbox("Bar color", PALETTE_OPTIONS, key="form_color_label")
 
@@ -179,7 +179,7 @@ with st.sidebar:
     # ------ Actions with LOGS ------
     if add_clicked:
         col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
-        gid = _resolve_group_id_from_form()
+        gid = _resolve_group_id_from_text(st.session_state.get("form_category",""))
         item = normalize_item({
             "id": str(uuid.uuid4()),
             "content": st.session_state["form_title"],
@@ -193,7 +193,7 @@ with st.sidebar:
         st.session_state["items"].append(item)
         LOG.info("ADD id=%s title=%r start=%s end=%s group=%s color=%s",
                  item["id"], item["content"], item["start"], item["end"], item.get("group",""), item.get("color",""))
-        # after add -> picker defaults to NEW
+        # after add -> picker back to NEW
         st.session_state["editing_item_id"] = ""
         st.session_state["_last_picker_id"] = ""
         st.success("Item added."); st.rerun()
@@ -204,7 +204,7 @@ with st.sidebar:
             st.warning("Select an item to edit (top dropdown).")
         else:
             col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
-            gid = _resolve_group_id_from_form()
+            gid = _resolve_group_id_from_text(st.session_state.get("form_category",""))
             before = _find_item(eid)
             LOG.info("EDIT requested id=%s (before)=%s", eid, before)
             for i,it in enumerate(st.session_state["items"]):
@@ -267,7 +267,7 @@ else:
     groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
     render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id",""))
 
-# ----------------- Debug panel (on-page) -----------------
+# ----------------- Debug panel -----------------
 with st.expander("🐞 Debug", expanded=False):
     st.write({
         "editing_item_id": st.session_state.get("editing_item_id",""),
@@ -277,10 +277,10 @@ with st.expander("🐞 Debug", expanded=False):
             "subtitle": st.session_state.get("form_subtitle",""),
             "start": str(st.session_state.get("form_start","")),
             "end": str(st.session_state.get("form_end","")),
-            "category_choice": st.session_state.get("form_category_choice",""),
-            "new_category_name": st.session_state.get("form_new_category_name",""),
+            "category": st.session_state.get("form_category",""),
             "color_label": st.session_state.get("form_color_label",""),
         },
         "items_count": len(st.session_state.get("items", [])),
         "groups_count": len(st.session_state.get("groups", [])),
+        "groups": st.session_state.get("groups", []),
     })
