@@ -1,3 +1,5 @@
+# lib/timeline.py — dynamic window, no click-selection, PNG export at ~300 PPI
+
 import json
 from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
@@ -5,6 +7,7 @@ import streamlit.components.v1 as components
 _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
 _FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
+_HTML2IMG = "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"  # exposes window.htmlToImage
 
 BUFFER_PCT = 0.15      # 15% of the longest span
 MIN_BUFFER_DAYS = 14   # at least ±14 days
@@ -60,25 +63,41 @@ def render_timeline(items, groups, selected_id: str = ""):
   <style>
     :root {{ --font: 'Montserrat', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, sans-serif; }}
     body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
-    #timeline {{ height:{height_px}px; background:#fff; border-radius:14px; border:1px solid #e7e9f2 }}
+    #shot {{
+      background:#fff;
+      border-radius:14px; border:1px solid #e7e9f2;
+      padding:8px;        /* include a little margin in the export */
+    }}
+    #timeline {{ height:{height_px}px; background:#fff; border-radius:12px; }}
     .row-bg {{ background: rgba(37,99,235,.05) }}
     .vis-time-axis .text {{ font-size:12px; font-weight:500 }}
     .vis-labelset .vis-label .vis-inner {{ font-weight:600 }}
     .vis-item .vis-item-content {{ line-height:1.15 }}
     .ttl {{ font-weight:600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
-    /* no selected styling since selection is disabled */
+    /* selection is disabled; no selected styles */
+    .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
+    .toolbar button {{
+      padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer
+    }}
+    .toolbar button:hover {{ background:#f3f4f6 }}
   </style>
 </head>
 <body>
-  <div class="toolbar" style="display:flex; gap:8px; margin:8px 0 12px">
-    <button id="fit"   style="padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer">Fit all</button>
-    <button id="win"   style="padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer">Show longest ± buffer</button>
-    <button id="today" style="padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer">Today</button>
+  <div class="toolbar">
+    <button id="fit">Fit all</button>
+    <button id="win">Show longest ± buffer</button>
+    <button id="today">Today</button>
+    <button id="png">Export PNG (300&nbsp;PPI)</button>
   </div>
-  <div id="timeline"></div>
+
+  <!-- Wrap the timeline in a container we can snapshot at high resolution -->
+  <div id="shot">
+    <div id="timeline"></div>
+  </div>
 
   <script src="{_VIS_JS}"></script>
+  <script src="{_HTML2IMG}"></script>
   <script>
     function esc(s) {{
       return String(s ?? "")
@@ -95,7 +114,7 @@ def render_timeline(items, groups, selected_id: str = ""):
       margin: {{ item: 8, axis: 12 }},
       start: '{ws}',
       end:   '{we}',
-      selectable: false,      // <-- disable click/tap selection
+      selectable: false,   // disable click/tap selection
       template: function(item) {{
         if (item.type === 'background') return '';
         const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
@@ -110,8 +129,32 @@ def render_timeline(items, groups, selected_id: str = ""):
     document.getElementById('fit').onclick   = () => {{ try {{ tl.fit({{animation:true}}); }} catch(e){{}} }};
     document.getElementById('win').onclick   = () => {{ try {{ tl.setWindow('{ws}','{we}',{{animation:true}}); }} catch(e){{}} }};
     document.getElementById('today').onclick = () => {{ try {{ tl.moveTo(new Date(), {{animation:true}}); }} catch(e){{}} }};
+
+    // Export PNG at ~300 PPI using html-to-image
+    document.getElementById('png').onclick = async () => {{
+      try {{
+        const node = document.getElementById('shot');
+        // 300 PPI vs. default ~96 PPI -> scale ~3.125
+        const pixelRatio = 300 / 96;
+        const dataUrl = await window.htmlToImage.toPng(node, {{
+          pixelRatio: pixelRatio,
+          backgroundColor: '#ffffff',
+          cacheBust: true
+        }});
+        const a = document.createElement('a');
+        const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+        a.download = `timeline_{ws}_to_{we}_{'{'}ts{'}'}_300ppi.png`;
+        a.href = dataUrl;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }} catch (e) {{
+        console.error('PNG export failed', e);
+        alert('PNG export failed. Try a different browser or zoom level.');
+      }}
+    }};
   </script>
 </body>
 </html>
     """
-    components.html(html, height=height_px + 52, scrolling=False)
+    components.html(html, height=height_px + 64, scrolling=False)
