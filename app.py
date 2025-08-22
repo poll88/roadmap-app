@@ -1,4 +1,4 @@
-# app.py — one-box category (type to reuse or create), reliable edit, with logs
+# app.py — one-box category (type to reuse or create), reliable edit, with server logs
 
 import uuid
 import logging
@@ -92,12 +92,10 @@ def _resolve_group_id_from_text(category_text: str) -> str:
     name = (category_text or "").strip()
     if not name:
         return ""
-
     # try case-insensitive match against existing names
     for g in st.session_state["groups"]:
         if g["content"].lower() == name.lower():
             return g["id"]
-
     # no match -> create
     g = normalize_group({"content": name, "order": len(st.session_state["groups"])})
     st.session_state["groups"].append(g)
@@ -109,7 +107,6 @@ def _suggest_categories(query: str, k=5):
     if not q:
         return []
     hits = [g["content"] for g in st.session_state["groups"] if q in g["content"].lower()]
-    # ensure stable order: by position then name
     return hits[:k]
 
 # ----------------- SIDEBAR -----------------
@@ -151,7 +148,7 @@ with st.sidebar:
             _prefill_form_from_item(_find_item(sel_id), groups_by_id)
         # else unchanged: keep user's typed edits
 
-    # ---- one-box category + the rest of the form ----
+    # ---- form with single category box ----
     _ensure_form_defaults()
     with st.form("item_form", clear_on_submit=False):
         colA, colB = st.columns(2)
@@ -162,10 +159,7 @@ with st.sidebar:
         st.text_input("Title", key="form_title", placeholder="Item title")
         st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
 
-        # Single category box (type to reuse/create)
         st.text_input("Category", key="form_category", placeholder="Type to select or create")
-
-        # Tiny inline suggestions (not a second widget)
         sugg = _suggest_categories(st.session_state.get("form_category",""), k=5)
         if sugg:
             st.caption("Suggestions: " + " · ".join(sugg))
@@ -266,21 +260,3 @@ else:
     items_view  = [i for i in st.session_state["items"]  if not ids or i.get("group","") in ids]
     groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
     render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id",""))
-
-# ----------------- Debug panel -----------------
-with st.expander("🐞 Debug", expanded=False):
-    st.write({
-        "editing_item_id": st.session_state.get("editing_item_id",""),
-        "_last_picker_id": st.session_state.get("_last_picker_id",""),
-        "form": {
-            "title": st.session_state.get("form_title",""),
-            "subtitle": st.session_state.get("form_subtitle",""),
-            "start": str(st.session_state.get("form_start","")),
-            "end": str(st.session_state.get("form_end","")),
-            "category": st.session_state.get("form_category",""),
-            "color_label": st.session_state.get("form_color_label",""),
-        },
-        "items_count": len(st.session_state.get("items", [])),
-        "groups_count": len(st.session_state.get("groups", [])),
-        "groups": st.session_state.get("groups", []),
-    })
