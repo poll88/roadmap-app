@@ -1,5 +1,3 @@
-# lib/timeline.py — dynamic window, no click-selection, PNG export at ~300 PPI
-
 import json
 from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
@@ -7,10 +5,10 @@ import streamlit.components.v1 as components
 _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css"
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
 _FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
-_HTML2IMG = "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"  # exposes window.htmlToImage
+_HTML2IMG = "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"
 
-BUFFER_PCT = 0.15      # 15% of the longest span
-MIN_BUFFER_DAYS = 14   # at least ±14 days
+BUFFER_PCT = 0.15
+MIN_BUFFER_DAYS = 14
 
 def _to_date(v):
     if isinstance(v, date): return v
@@ -36,14 +34,14 @@ def _window_longest(items):
     buf = max(MIN_BUFFER_DAYS, int(round(best_span * BUFFER_PCT)))
     return s - timedelta(days=buf), e + timedelta(days=buf)
 
-def render_timeline(items, groups, selected_id: str = ""):
+def render_timeline(items, groups, selected_id: str = "", export_png: bool = False):
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
     win_start, win_end = _window_longest(items)
     ws, we = win_start.isoformat(), win_end.isoformat()
 
-    # paint light row backgrounds across the window
+    # background per row across window
     bg = [{
         "id": f"bg-{g['id']}", "group": g["id"],
         "start": ws, "end": we, "type": "background", "className": "row-bg"
@@ -51,6 +49,7 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     items_json  = json.dumps(items + bg, default=str)
     groups_json = json.dumps(groups, default=str)
+    export_flag = "true" if export_png else "false"
 
     html = f"""
 <!doctype html>
@@ -62,11 +61,10 @@ def render_timeline(items, groups, selected_id: str = ""):
   <link rel="stylesheet" href="{_VIS_CSS}"/>
   <style>
     :root {{ --font: 'Montserrat', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, sans-serif; }}
-    body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
-    #shot {{
-      background:#fff;
-      border-radius:14px; border:1px solid #e7e9f2;
-      padding:8px;        /* include a little margin in the export */
+    body, #wrap, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
+    #wrap {{
+      background:#fff; border-radius:14px; border:1px solid #e7e9f2;
+      padding:8px;   /* included in PNG for a small margin */
     }}
     #timeline {{ height:{height_px}px; background:#fff; border-radius:12px; }}
     .row-bg {{ background: rgba(37,99,235,.05) }}
@@ -75,24 +73,10 @@ def render_timeline(items, groups, selected_id: str = ""):
     .vis-item .vis-item-content {{ line-height:1.15 }}
     .ttl {{ font-weight:600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
-    /* selection is disabled; no selected styles */
-    .toolbar {{ display:flex; gap:8px; margin:8px 0 12px }}
-    .toolbar button {{
-      padding:6px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:8px; cursor:pointer
-    }}
-    .toolbar button:hover {{ background:#f3f4f6 }}
   </style>
 </head>
 <body>
-  <div class="toolbar">
-    <button id="fit">Fit all</button>
-    <button id="win">Show longest ± buffer</button>
-    <button id="today">Today</button>
-    <button id="png">Export PNG (300&nbsp;PPI)</button>
-  </div>
-
-  <!-- Wrap the timeline in a container we can snapshot at high resolution -->
-  <div id="shot">
+  <div id="wrap">
     <div id="timeline"></div>
   </div>
 
@@ -107,6 +91,7 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     const ITEMS  = {items_json};
     const GROUPS = {groups_json};
+    const DO_EXPORT = {export_flag};  // set by Streamlit when the sidebar button is pressed
 
     const container = document.getElementById('timeline');
     const options = {{
@@ -125,17 +110,10 @@ def render_timeline(items, groups, selected_id: str = ""):
 
     const tl = new vis.Timeline(container, ITEMS, GROUPS, options);
 
-    // Toolbar buttons
-    document.getElementById('fit').onclick   = () => {{ try {{ tl.fit({{animation:true}}); }} catch(e){{}} }};
-    document.getElementById('win').onclick   = () => {{ try {{ tl.setWindow('{ws}','{we}',{{animation:true}}); }} catch(e){{}} }};
-    document.getElementById('today').onclick = () => {{ try {{ tl.moveTo(new Date(), {{animation:true}}); }} catch(e){{}} }};
-
-    // Export PNG at ~300 PPI using html-to-image
-    document.getElementById('png').onclick = async () => {{
+    async function exportPng() {{
+      const node = document.getElementById('wrap');
       try {{
-        const node = document.getElementById('shot');
-        // 300 PPI vs. default ~96 PPI -> scale ~3.125
-        const pixelRatio = 300 / 96;
+        const pixelRatio = 300 / 96; // ~3.125x for 300 PPI
         const dataUrl = await window.htmlToImage.toPng(node, {{
           pixelRatio: pixelRatio,
           backgroundColor: '#ffffff',
@@ -143,18 +121,24 @@ def render_timeline(items, groups, selected_id: str = ""):
         }});
         const a = document.createElement('a');
         const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-        a.download = `timeline_{ws}_to_{we}_{'{'}ts{'}'}_300ppi.png`;
+        a.download = `timeline_{ws}_to_{we}_${{ts}}_300ppi.png`;
         a.href = dataUrl;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
       }} catch (e) {{
         console.error('PNG export failed', e);
-        alert('PNG export failed. Try a different browser or zoom level.');
+        alert('PNG export failed. If this persists, try a desktop browser.');
       }}
-    }};
+    }}
+
+    // If the sidebar button set export flag, export once on first paint.
+    if (DO_EXPORT) {{
+      // Wait one tick so timeline paints fully
+      requestAnimationFrame(() => exportPng());
+    }}
   </script>
 </body>
 </html>
     """
-    components.html(html, height=height_px + 64, scrolling=False)
+    components.html(html, height=height_px + 32, scrolling=False)
