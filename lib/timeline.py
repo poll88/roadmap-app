@@ -1,3 +1,5 @@
+# lib/timeline.py — dynamic window, no click-selection, PNG export (with iOS fallback)
+
 import json
 from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
@@ -6,6 +8,7 @@ _VIS_CSS = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.c
 _VIS_JS  = "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js"
 _FONT    = "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap"
 _HTML2IMG = "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"
+_HTML2CANVAS = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"
 
 BUFFER_PCT = 0.15
 MIN_BUFFER_DAYS = 14
@@ -64,7 +67,7 @@ def render_timeline(items, groups, selected_id: str = "", export_png: bool = Fal
     body, #wrap, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
     #wrap {{
       background:#fff; border-radius:14px; border:1px solid #e7e9f2;
-      padding:8px;   /* included in PNG for a small margin */
+      padding:8px;   /* include margin in PNG */
     }}
     #timeline {{ height:{height_px}px; background:#fff; border-radius:12px; }}
     .row-bg {{ background: rgba(37,99,235,.05) }}
@@ -82,6 +85,7 @@ def render_timeline(items, groups, selected_id: str = "", export_png: bool = Fal
 
   <script src="{_VIS_JS}"></script>
   <script src="{_HTML2IMG}"></script>
+  <script src="{_HTML2CANVAS}"></script>
   <script>
     function esc(s) {{
       return String(s ?? "")
@@ -91,7 +95,7 @@ def render_timeline(items, groups, selected_id: str = "", export_png: bool = Fal
 
     const ITEMS  = {items_json};
     const GROUPS = {groups_json};
-    const DO_EXPORT = {export_flag};  // set by Streamlit when the sidebar button is pressed
+    const DO_EXPORT = {export_flag};  // set true once when sidebar button is clicked
 
     const container = document.getElementById('timeline');
     const options = {{
@@ -110,31 +114,67 @@ def render_timeline(items, groups, selected_id: str = "", export_png: bool = Fal
 
     const tl = new vis.Timeline(container, ITEMS, GROUPS, options);
 
+    function saveDataUrl(dataUrl) {{
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+      a.download = `timeline_{ws}_to_{we}_${{ts}}_300ppi.png`;
+      a.href = dataUrl;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }}
+
     async function exportPng() {{
       const node = document.getElementById('wrap');
+
+      // Give the timeline a moment to fully paint
+      await new Promise(r => setTimeout(r, 120));
+
+      // Prefer ~300 PPI (≈3.125x) — reduce on iOS to avoid blank captures
+      const ua = navigator.userAgent || '';
+      const isiOS = /iPad|iPhone|iPod/.test(ua);
+      const preferredPR = isiOS ? 2.0 : (300 / 96);
+
+      // 1) Try html-to-image
       try {{
-        const pixelRatio = 300 / 96; // ~3.125x for 300 PPI
         const dataUrl = await window.htmlToImage.toPng(node, {{
-          pixelRatio: pixelRatio,
+          pixelRatio: preferredPR,
           backgroundColor: '#ffffff',
           cacheBust: true
         }});
-        const a = document.createElement('a');
-        const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-        a.download = `timeline_{ws}_to_{we}_${{ts}}_300ppi.png`;
-        a.href = dataUrl;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        if (dataUrl && dataUrl.startsWith('data:image/png')) {{
+          saveDataUrl(dataUrl);
+          return;
+        }}
       }} catch (e) {{
-        console.error('PNG export failed', e);
-        alert('PNG export failed. If this persists, try a desktop browser.');
+        console.warn('html-to-image failed:', e);
+      }}
+
+      // 2) Fallback: html2canvas (more stable on Safari/iOS)
+      try {{
+        const canvas = await window.html2canvas(node, {{
+          backgroundColor: '#ffffff',
+          useCORS: true,
+          allowTaint: true,
+          scale: preferredPR,
+          logging: false,
+          windowWidth: node.scrollWidth,
+          windowHeight: node.scrollHeight
+        }});
+        const dataUrl2 = canvas.toDataURL('image/png');
+        if (dataUrl2 && dataUrl2.startsWith('data:image/png')) {{
+          saveDataUrl(dataUrl2);
+          return;
+        }}
+        throw new Error('html2canvas returned empty data URL');
+      }} catch (e2) {{
+        console.error('html2canvas fallback failed:', e2);
+        alert('PNG export failed. If this persists on mobile Safari, try again on desktop.');
       }}
     }}
 
-    // If the sidebar button set export flag, export once on first paint.
     if (DO_EXPORT) {{
-      // Wait one tick so timeline paints fully
+      // Wait one frame so layout settles
       requestAnimationFrame(() => exportPng());
     }}
   </script>
