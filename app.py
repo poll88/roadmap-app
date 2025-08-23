@@ -1,4 +1,4 @@
-# app.py — server-side PNG export (300 PPI) with Month/Quarter granularity
+# app.py — sidebar PNG export (300 PPI) under Export JSON
 
 import uuid
 import io
@@ -11,9 +11,9 @@ from lib.state import (
     normalize_item, normalize_group, normalize_state,
     reset_defaults, ensure_range, export_items_groups
 )
-from lib.timeline import render_timeline  # unchanged (no click selection)
+from lib.timeline import render_timeline  # no click selection
 
-# NEW: matplotlib for server-rendered PNG
+# Server-side PNG rendering
 from matplotlib import pyplot as plt, dates as mdates
 from matplotlib.patches import Rectangle
 
@@ -29,6 +29,8 @@ st.session_state.setdefault("groups", [])
 st.session_state.setdefault("active_group_id", "")
 st.session_state.setdefault("editing_item_id", "")
 st.session_state.setdefault("_last_picker_id", "")
+st.session_state.setdefault("png_bytes", b"")
+st.session_state.setdefault("png_filename", "timeline_300ppi.png")
 
 # Be tolerant to either normalize_state signature
 try:
@@ -117,12 +119,10 @@ def _month_add(d: date, months: int) -> date:
     y, m = d.year, d.month + months
     y += (m - 1) // 12
     m = (m - 1) % 12 + 1
-    # clamp day to month length
     _last = [31, 29 if (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
     return date(y, m, min(d.day, _last))
 
 def _span(items):
-    """Earliest start, latest end across items (ignores backgrounds)."""
     if not items:
         t = date.today()
         return t, t
@@ -142,43 +142,31 @@ def _span(items):
     return smin, emax
 
 def _export_png_bytes(items, groups, *, time_base: str, pad_months_each_side: int, width_in: float, show_grid: bool) -> bytes:
-    """
-    Render a static PNG timeline using matplotlib.
-    time_base: 'Month' or 'Quarter'
-    width_in: figure width in inches (height auto based on groups)
-    """
     if not items:
         return b""
 
-    # order groups by 'order' if present, else by content
     groups_sorted = sorted(groups, key=lambda g: (g.get("order", 0), g.get("content", "")))
     gid_to_row = {g["id"]: i for i, g in enumerate(groups_sorted)}
     row_labels = [g["content"] for g in groups_sorted]
     nrows = max(1, len(groups_sorted))
 
-    # compute x-span with padding
     start, end = _span(items)
     start = _month_add(start.replace(day=1), -pad_months_each_side)
-    end_last = _month_add(end.replace(day=1), pad_months_each_side + 1)  # +1 to include the last month fully
-    # figure height based on rows
-    height_in = max(3.5, 0.9 * nrows + 1.6)
+    end_last = _month_add(end.replace(day=1), pad_months_each_side + 1)
 
-    # create figure
+    height_in = max(3.5, 0.9 * nrows + 1.6)
     dpi = 300
     fig, ax = plt.subplots(figsize=(width_in, height_in), dpi=dpi)
 
-    # background row shading
     for r in range(nrows):
         if r % 2 == 0:
             ax.axhspan(r - 0.4, r + 0.4, color="#f7f7fb", zorder=0)
 
-    # draw items
     for it in items:
         if it.get("type") == "background":
             continue
         gid = it.get("group", "")
         if gid not in gid_to_row:
-            # unseen group (e.g., filtered away) -> skip
             continue
         y = gid_to_row[gid]
         s = _to_date(it.get("start"))
@@ -186,25 +174,19 @@ def _export_png_bytes(items, groups, *, time_base: str, pad_months_each_side: in
         if e < s:
             s, e = e, s
         xs = mdates.date2num(s)
-        xe = mdates.date2num(e)
-        # ensure visible width
-        if xe == xs:
-            xe = xs + 1
+        xe = mdates.date2num(e) if mdates.date2num(e) > mdates.date2num(s) else mdates.date2num(s) + 1
         color = it.get("color", "#CBD5E1")
         rect = Rectangle((xs, y - 0.25), xe - xs, 0.5, facecolor=color, edgecolor=color, linewidth=1.0, zorder=2)
         ax.add_patch(rect)
-        # text (title + subtitle)
         title = (it.get("content") or "").strip()
         subtitle = (it.get("subtitle") or "").strip()
         label = title if not subtitle else f"{title}\n{subtitle}"
         ax.text(xs + 0.1, y, label, va="center", ha="left", fontsize=8, zorder=3)
 
-    # y-axis
     ax.set_ylim(-0.6, nrows - 0.4)
     ax.set_yticks(range(nrows))
     ax.set_yticklabels(row_labels, fontsize=9)
 
-    # x-axis
     ax.set_xlim(mdates.date2num(start), mdates.date2num(end_last))
     if time_base == "Quarter":
         locator = mdates.MonthLocator(bymonth=[1, 4, 7, 10])
@@ -219,7 +201,6 @@ def _export_png_bytes(items, groups, *, time_base: str, pad_months_each_side: in
     if show_grid:
         ax.grid(axis="x", color="#e5e7eb", linewidth=0.8, zorder=1)
 
-    # style
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
     ax.spines["left"].set_color("#e5e7eb")
@@ -251,7 +232,6 @@ with st.sidebar:
 
     pick = st.selectbox("Item", picker_options, index=default_idx, key="picker_label")
 
-    # Selection change handling
     if pick == PICK_NEW:
         if st.session_state.get("_last_picker_id"):
             LOG.info("Picker -> NEW (was %s)", st.session_state["_last_picker_id"])
@@ -353,20 +333,50 @@ with st.sidebar:
     exported = export_items_groups(st.session_state)
     st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
 
-    # ---- NEW: PNG Export (server-rendered) ----
+    # ---- PNG Export (SIDEBAR) ----
     st.subheader("📸 PNG Export (300 PPI)")
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
-        time_base = st.selectbox("Time base", ["Month", "Quarter"], index=0, help="Tick labels every month or quarter.")
-    with col2:
-        pad_months = st.slider("Padding (months each side)", 0, 12, 1)
-    with col3:
-        width_in = st.slider("Width (inches @300 PPI)", 8, 60, 18)
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        time_base = st.selectbox("Time base", ["Month", "Quarter"], index=0, key="export_time_base")
+    with c2:
+        pad_months = st.slider("Padding (months each side)", 0, 12, 1, key="export_pad_months")
+    with c3:
+        width_in = st.slider("Width (inches)", 8, 60, 18, key="export_width_in")
 
-    # We'll generate based on the *filtered* view in the main area (computed below).
-    # To keep sidebar stateless, we store choices now:
-    st.session_state["export_opts"] = {"time_base": time_base, "pad_months": pad_months, "width_in": float(width_in)}
+    # Generate PNG based on CURRENT FILTER (set in main via key="filter_categories")
+    if st.button("Generate PNG", use_container_width=True):
+        sel_names = st.session_state.get("filter_categories", [])
+        sel_ids = {g["id"] for g in st.session_state["groups"] if g["content"] in sel_names} if sel_names else set()
+        items_view = [i for i in st.session_state["items"] if not sel_ids or i.get("group", "") in sel_ids]
+        groups_view = [g for g in st.session_state["groups"] if not sel_ids or g["id"] in sel_ids]
 
+        png = _export_png_bytes(
+            items_view, groups_view,
+            time_base=st.session_state["export_time_base"],
+            pad_months_each_side=st.session_state["export_pad_months"],
+            width_in=float(st.session_state["export_width_in"]),
+            show_grid=True
+        )
+        st.session_state["png_bytes"] = png or b""
+        # filename with span
+        if items_view:
+            smin, emax = _span(items_view)
+            st.session_state["png_filename"] = f"timeline_{smin.isoformat()}_to_{emax.isoformat()}_300ppi.png"
+        else:
+            st.session_state["png_filename"] = "timeline_300ppi.png"
+        st.toast("PNG ready ↓", icon="📸")
+
+    # Show download button when we have bytes
+    st.download_button(
+        "⬇️ Download PNG",
+        data=st.session_state["png_bytes"],
+        file_name=st.session_state.get("png_filename", "timeline_300ppi.png"),
+        mime="image/png",
+        disabled=(not st.session_state.get("png_bytes")),
+        use_container_width=True
+    )
+
+    # --- Import JSON ---
     uploaded = st.file_uploader("Import JSON", type=["json"])
     if uploaded:
         import json
@@ -375,6 +385,7 @@ with st.sidebar:
         st.session_state["groups"] = [normalize_group(x) for x in data.get("groups", [])]
         st.session_state["editing_item_id"] = ""
         st.session_state["_last_picker_id"] = ""
+        st.session_state["png_bytes"] = b""
         LOG.info("IMPORT items=%d groups=%d", len(st.session_state["items"]), len(st.session_state["groups"]))
         st.success("Imported."); st.rerun()
 
@@ -384,26 +395,9 @@ st.title("Roadmap Timeline")
 if not st.session_state["items"]:
     st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
 else:
-    names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]])
+    # make filter value accessible to sidebar by giving it a key
+    names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]], key="filter_categories")
     ids = {g["id"] for g in st.session_state["groups"] if g["content"] in names} if names else set()
     items_view = [i for i in st.session_state["items"] if not ids or i.get("group", "") in ids]
     groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
-
     render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id", ""))
-
-    # ---- PNG download button (uses filtered view & current export options) ----
-    opts = st.session_state.get("export_opts", {"time_base": "Month", "pad_months": 1, "width_in": 18.0})
-    png_bytes = _export_png_bytes(
-        items_view, groups_view,
-        time_base=opts["time_base"],
-        pad_months_each_side=opts["pad_months"],
-        width_in=opts["width_in"],
-        show_grid=True
-    )
-    st.download_button(
-        "⬇️ Export PNG (300 PPI)",
-        data=png_bytes if png_bytes else b"",
-        file_name="timeline_300ppi.png",
-        mime="image/png",
-        disabled=(not items_view)
-    )
