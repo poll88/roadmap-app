@@ -1,5 +1,5 @@
-# lib/timeline.py — stable render with vis.js load-wait, visible error banner,
-# SVG export module isolated, transparent background, no click selection.
+# lib/timeline.py — bulletproof render: waits for vis.js, inlines CSS, graceful group fallback,
+# visible error banner, SVG export isolated; transparent background; no click selection.
 
 import json
 from datetime import date, datetime, timedelta
@@ -44,7 +44,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     win_start, win_end = _window_longest(items)
     ws, we = win_start.isoformat(), win_end.isoformat()
 
-    # background per row across window (only if we have groups)
+    # Background per row (only if groups exist)
     bg = []
     if groups:
         bg = [{
@@ -63,7 +63,8 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
   <meta charset="utf-8"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="{_FONT}" rel="stylesheet">
-  <link rel="stylesheet" href="{_VIS_CSS}"/>
+  <!-- keep the link, but we will also inline the CSS for reliability -->
+  <link rel="stylesheet" href="{_VIS_CSS}" crossorigin="anonymous"/>
   <style>
     :root {{ --font: 'Montserrat', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, sans-serif; }}
     html, body {{ background: transparent; }}
@@ -99,9 +100,9 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
 
   <script src="{_VIS_JS}"></script>
 
-  <!-- Base renderer (non-module). Waits for vis.js to be available. -->
+  <!-- Base renderer (non-module). Waits for vis.js and inlines vis CSS before rendering. -->
   <script>
-    // Data payload exposed to both scripts
+    // Data payload shared by both scripts
     window.__TIMELINE_DATA__ = {{
       ITEMS: {items_json},
       GROUPS: {groups_json},
@@ -125,9 +126,52 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       }} catch(_) {{}}
     }}
 
+    // Inline the vis CSS to avoid stylesheet load races on iPad/CDN
+    let __cssInjected = false;
+    function ensureVisCss() {{
+      if (__cssInjected) return Promise.resolve();
+      return fetch("{_VIS_CSS}", {{ mode: 'cors' }})
+        .then(r => r.ok ? r.text() : '')
+        .then(css => {{
+          if (css) {{
+            const s = document.createElement('style');
+            s.setAttribute('data-inlined-vis-css', '1');
+            s.textContent = css;
+            document.head.appendChild(s);
+            __cssInjected = true;
+          }}
+        }})
+        .catch(() => {{ /* non-fatal; link tag will be used */ }});
+    }}
+
+    // If groups array is empty but items carry a "group" field, fall back to single-lane render.
+    function stripGroupsIfMissing(items, groups) {{
+      try {{
+        const hasGroups = Array.isArray(groups) && groups.length > 0;
+        const anyGrouped = (items || []).some(it => it && it.group);
+        if (!hasGroups && anyGrouped) {{
+          return (items || []).map(it => {{
+            if (!it) return it;
+            const cpy = Object.assign({{}}, it);
+            delete cpy.group;
+            return cpy;
+          }});
+        }}
+        return items || [];
+      }} catch(_) {{
+        return items || [];
+      }}
+    }}
+
     function renderTimeline() {{
       const el = document.getElementById('timeline');
       const D = window.__TIMELINE_DATA__;
+      const baseItems  = Array.isArray(D.ITEMS) ? D.ITEMS : [];
+      const baseGroups = Array.isArray(D.GROUPS) ? D.GROUPS : [];
+
+      const safeItems  = stripGroupsIfMissing(baseItems, baseGroups);
+      const safeGroups = baseGroups; // keep as-is; may be empty
+
       const options = {{
         orientation: 'top',
         margin: {{ item: 8, axis: 12 }},
@@ -141,31 +185,39 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
           return t + s;
         }},
       }};
+
       try {{
-        // use DataSet for extra safety
-        const items  = new vis.DataSet(D.ITEMS || []);
-        const groups = new vis.DataSet(D.GROUPS || []);
-        if (window.__TL__ && window.__TL__.destroy) window.__TL__.destroy();
-        window.__TL__ = new vis.Timeline(el, items, groups, options);
+        const items  = new vis.DataSet(safeItems);
+        // If we have no groups, pass only items (3-arg ctor) so vis renders single lane
+        if (safeGroups && safeGroups.length) {{
+          const groups = new vis.DataSet(safeGroups);
+          if (window.__TL__ && window.__TL__.destroy) window.__TL__.destroy();
+          window.__TL__ = new vis.Timeline(el, items, groups, options);
+        }} else {{
+          if (window.__TL__ && window.__TL__.destroy) window.__TL__.destroy();
+          window.__TL__ = new vis.Timeline(el, items, options);
+        }}
       }} catch (e) {{
         console.error(e);
         showErr(e.message || e);
       }}
     }}
 
-    (function waitForVis(n) {{
+    (function boot(n) {{
+      // Wait for vis.js to be present, then inline the CSS, then render
       if (window.vis && window.vis.Timeline) {{
-        // give layout a tick then render
-        return requestAnimationFrame(() => renderTimeline());
+        return ensureVisCss().finally(() => {{
+          requestAnimationFrame(() => renderTimeline());
+        }});
       }}
-      if (n > 60) {{  // ~3s
+      if (n > 80) {{  // ~4s
         return showErr('vis.js did not load.');
       }}
-      setTimeout(() => waitForVis(n + 1), 50);
-    })(0);
+      setTimeout(() => boot(n + 1), 50);
+    }})(0);
   </script>
 
-  <!-- SVG export kept in a separate module; if it fails, base render is unaffected -->
+  <!-- SVG export stays isolated in a module; if it fails, base render is unaffected -->
   <script type="module">
     import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
 
@@ -176,7 +228,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const ITEMS  = D.ITEMS || [];
       const GROUPS = D.GROUPS || [];
 
-      // compute span
       const toDate = v => new Date(typeof v === 'string' ? v : v);
       let smin = null, emax = null;
       for (const it of ITEMS) {{
@@ -198,7 +249,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
       const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
 
-      // offscreen container
+      // Offscreen render node
       const pxPerInch = 96;
       const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
       const rows      = Math.max(1, GROUPS.length);
@@ -239,11 +290,19 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         }},
       }};
 
-      // render offscreen TL
-      const exTl = new vis.Timeline(node, ITEMS, GROUPS, options);
+      const exTl = new vis.Timeline(node, ITEMS, GROUPS && GROUPS.length ? GROUPS : undefined, options);
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
 
-      // make self-contained SVG (transparent bg)
+      // Inline the externally loaded CSS into the SVG as well
+      try {{
+        const css = await fetch("{_VIS_CSS}", {{ mode: 'cors' }}).then(r => r.ok ? r.text() : '');
+        if (css) {{
+          const style = document.createElement('style');
+          style.textContent = css;
+          node.prepend(style);
+        }}
+      }} catch(_) {{}}
+
       const svgDoc = elementToSVG(node);
       await inlineResources(svgDoc.documentElement);
       const svgText = new XMLSerializer().serializeToString(svgDoc);
@@ -266,11 +325,10 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
       exportSVG(EXPORT);
     }} catch (err) {{
-      // export failure is non-fatal by design
-      console.warn('SVG export module failed:', err);
+      console.warn('SVG export module failed:', err);  // non-fatal
     }}
   </script>
 </body>
 </html>
     """
-    components.html(html, height=height_px + 24, scrolling=False)
+    components.html(html, height=height_px + 28, scrolling=False)
