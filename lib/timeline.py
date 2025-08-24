@@ -1,11 +1,14 @@
-# lib/timeline.py — failsafe vis loader (multi-CDN), visible status+errors,
-# transparent background, group-safe render, SVG export kept separate.
+# lib/timeline.py — clean render (no debug UI) + reliable SVG download overlay
+# - Multi-CDN loader for vis.js/CSS (robust on iPad)
+# - No click selection
+# - Exact-style SVG export with transparent background
+# - Shows a small "Download SVG" overlay after export (works on iPad Safari)
 
 import json
 from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
 
-# Preferred CDN locations (we'll try all until one works)
+# Multiple CDNs for reliability
 _VIS_CSS_URLS = [
   "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css",
   "https://cdn.jsdelivr.net/npm/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css",
@@ -16,7 +19,7 @@ _VIS_JS_URLS = [
   "https://cdn.jsdelivr.net/npm/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/vis-timeline/7.7.3/vis-timeline-graph2d.min.js",
 ]
-# ESM (export only; base render does not depend on this)
+# ESM for SVG export only (base render doesn’t depend on it)
 _DOM_TO_SVG_ESM = "https://cdn.jsdelivr.net/npm/dom-to-svg@0.12.2/lib/index.js"
 
 BUFFER_PCT = 0.15
@@ -70,8 +73,11 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!-- Montserrat for a modern look -->
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    :root {{ --font: ui-sans-serif, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; }}
+    :root {{ --font: 'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; }}
     html, body {{ background: transparent; margin:0; padding:0; }}
     body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
     #wrap {{ position: relative; }}
@@ -87,28 +93,38 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     .ttl {{ font-weight:600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
 
-    /* Small status box so you can see what's happening */
-    #status {{
-      position:absolute; right:8px; top:8px; max-width:50%;
-      background:#f8fafc; border:1px dashed #cbd5e1; color:#0f172a;
-      font-size:11px; line-height:1.25; padding:6px 8px; border-radius:8px; white-space:pre-wrap;
+    /* Small overlay that appears AFTER export is ready (esp. for iPad Safari) */
+    #dlbox {{
+      display:none; position:absolute; right:10px; top:10px;
+      background:#ffffff; border:1px solid #e5e7eb; border-radius:10px;
+      box-shadow:0 6px 18px rgba(16,24,40,.08); padding:10px 12px; z-index:20;
+      font-size:12px;
     }}
-    #err {{
-      display:none; position:absolute; inset:0; padding:14px; border-radius:12px;
-      background: rgba(255,248,248,.96); color:#991B1B; border:1px solid #fecaca; font-size:13px; line-height:1.35;
+    #dlbox .row {{ display:flex; align-items:center; gap:8px; }}
+    #dlbox a {{
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:8px 10px; border-radius:8px; border:1px solid #cbd5e1;
+      text-decoration:none; font-weight:600; color:#0f172a;
     }}
-    #err strong {{ display:block; margin-bottom:6px; }}
+    #dlbox button {{
+      margin-left:8px; padding:6px 8px; border-radius:8px; border:1px solid #e5e7eb;
+      background:#f8fafc; color:#334155; cursor:pointer;
+    }}
   </style>
 </head>
 <body>
   <div id="wrap">
     <div id="timeline"></div>
-    <div id="status">Status: booting…</div>
-    <div id="err"><strong>Timeline failed to load</strong><span id="errmsg"></span></div>
+    <div id="dlbox">
+      <div class="row">
+        <a id="svg_link" download target="_blank">Download SVG</a>
+        <button id="close_dl" title="Close">✕</button>
+      </div>
+    </div>
   </div>
 
   <script>
-    // Data for both scripts
+    // Data shared by both scripts
     window.__TL_DATA__ = {{
       ITEMS: {items_json},
       GROUPS: {groups_json},
@@ -119,75 +135,50 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       JS_URLS: {json.dumps(_VIS_JS_URLS)}
     }};
 
-    function logStatus(msg) {{
-      try {{
-        const s = document.getElementById('status');
-        s.textContent += "\\n" + msg;
-      }} catch(_){{}}
-    }}
-    function showErr(msg) {{
-      const box = document.getElementById('err');
-      const span = document.getElementById('errmsg');
-      span.textContent = String(msg || 'Unknown error');
-      box.style.display = 'block';
-      logStatus("ERROR: " + span.textContent);
-    }}
-
     function loadCssSeq(urls) {{
       return new Promise((resolve) => {{
         let i = 0, done = false;
-        const tryNext = () => {{
-          if (i >= urls.length) {{
-            // Last resort: continue without (we styled essentials ourselves)
-            return resolve("none");
-          }}
+        const next = () => {{
+          if (i >= urls.length) return resolve("none");
           const l = document.createElement('link');
           l.rel = 'stylesheet'; l.href = urls[i]; l.crossOrigin = 'anonymous';
           l.onload = () => {{ if (!done) {{ done = true; resolve(urls[i]); }} }};
-          l.onerror = () => {{ l.remove(); i++; tryNext(); }};
+          l.onerror = () => {{ l.remove(); i++; next(); }};
           document.head.appendChild(l);
         }};
-        tryNext();
+        next();
       }});
     }}
-
     function loadScriptSeq(urls) {{
       return new Promise((resolve, reject) => {{
         let i = 0;
-        const tryNext = () => {{
-          if (i >= urls.length) return reject(new Error("All vis.js URLs failed"));
+        const next = () => {{
+          if (i >= urls.length) return reject(new Error("vis.js failed"));
           const s = document.createElement('script');
           s.src = urls[i]; s.async = true; s.crossOrigin = 'anonymous';
           s.onload = () => resolve(urls[i]);
-          s.onerror = () => {{ s.remove(); i++; tryNext(); }};
+          s.onerror = () => {{ s.remove(); i++; next(); }};
           document.head.appendChild(s);
         }};
-        tryNext();
+        next();
       }});
     }}
-
     function stripGroupsIfMissing(items, groups) {{
-      try {{
-        const hasGroups = Array.isArray(groups) && groups.length > 0;
-        const anyGrouped = (items || []).some(it => it && it.group);
-        if (!hasGroups && anyGrouped) {{
-          return (items || []).map(it => {{
-            if (!it) return it;
-            const c = Object.assign({{}}, it);
-            delete c.group;
-            return c;
-          }});
-        }}
-        return items || [];
-      }} catch(_) {{
-        return items || [];
+      const hasGroups = Array.isArray(groups) && groups.length > 0;
+      const anyGrouped = (items || []).some(it => it && it.group);
+      if (!hasGroups && anyGrouped) {{
+        return (items || []).map(it => {{ if (!it) return it; const c={{...it}}; delete c.group; return c; }});
       }}
+      return items || [];
     }}
 
-    function renderTimeline() {{
+    // Render after CSS+JS are in
+    (async function boot() {{
       const D = window.__TL_DATA__;
-      const el = document.getElementById('timeline');
+      await loadCssSeq(D.CSS_URLS).catch(()=>{});
+      await loadScriptSeq(D.JS_URLS);
 
+      const el = document.getElementById('timeline');
       const items  = stripGroupsIfMissing(D.ITEMS, D.GROUPS);
       const groups = Array.isArray(D.GROUPS) ? D.GROUPS : [];
 
@@ -198,134 +189,4 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         end:   D.WE,
         selectable: false,
         template: function(item) {{
-          if (item.type === 'background') return '';
-          const t = item.content ? `<div class="ttl">${{String(item.content).replace(/&/g,"&amp;").replace(/</g,"&lt;")}}</div>` : '';
-          const s = item.subtitle ? `<div class="sub">${{String(item.subtitle).replace(/&/g,"&amp;").replace(/</g,"&lt;")}}</div>` : '';
-          return t + s;
-        }},
-      }};
-
-      try {{
-        if (groups.length) {{
-          window.__TL__ = new vis.Timeline(el, new vis.DataSet(items), new vis.DataSet(groups), options);
-        }} else {{
-          window.__TL__ = new vis.Timeline(el, new vis.DataSet(items), options);
-        }}
-        logStatus("Rendered OK. items=" + (items?.length||0) + " groups=" + (groups?.length||0));
-      }} catch (e) {{
-        console.error(e); showErr(e.message || e);
-      }}
-    }}
-
-    (async function boot() {{
-      const D = window.__TL_DATA__;
-      logStatus("Loading CSS…");
-      const cssFrom = await loadCssSeq(D.CSS_URLS).catch(()=>"none");
-      logStatus("CSS from: " + cssFrom);
-
-      logStatus("Loading vis.js…");
-      let jsFrom = "unknown";
-      try {{
-        jsFrom = await loadScriptSeq(D.JS_URLS);
-        logStatus("vis.js from: " + jsFrom);
-      }} catch (e) {{
-        showErr("vis.js failed to load from all CDNs");
-        return;
-      }}
-
-      // Wait 1 frame so the browser applies styles
-      requestAnimationFrame(renderTimeline);
-    }})();
-  </script>
-
-  <!-- SVG export isolated in a module (won't affect base render if it fails) -->
-  <script type="module">
-    import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
-    const D = window.__TL_DATA__;
-    const EXPORT = D && D.EXPORT;
-    if (EXPORT && Object.keys(EXPORT).length) {{
-      const ITEMS  = D.ITEMS || [];
-      const GROUPS = D.GROUPS || [];
-
-      const toDate = v => new Date(typeof v === 'string' ? v : v);
-      let smin = null, emax = null;
-      for (const it of ITEMS) {{
-        if (!it || it.type === 'background') continue;
-        const s = toDate(it.start), e = toDate(it.end || it.start);
-        const a = s < e ? s : e, b = s < e ? e : s;
-        if (!smin || a < smin) smin = a;
-        if (!emax || b > emax) emax = b;
-      }}
-      if (!smin || !emax) return;
-
-      const monthAdd = (d, delta) => {{ const dt=new Date(d); const m=dt.getUTCMonth()+delta; dt.setUTCMonth(m,1); return dt; }};
-      const pad = Number(EXPORT.padMonths || 0);
-      const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
-      const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
-
-      const pxPerInch = 96;
-      const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
-      const rows      = Math.max(1, GROUPS.length);
-      const cssHeight = Math.max(260, 80 * rows + 120);
-
-      const wrap = document.createElement('div');
-      wrap.style.position = 'fixed'; wrap.style.left = '-100000px'; wrap.style.top = '0';
-      wrap.style.width = cssWidth + 'px'; wrap.style.background = 'transparent';
-      document.body.appendChild(wrap);
-
-      const node = document.createElement('div');
-      node.style.width = '100%'; node.style.height = cssHeight + 'px'; node.style.background = 'transparent';
-      node.className = 'vis-timeline';
-      wrap.appendChild(node);
-
-      const timeAxis = {{}};
-      const gran = String(EXPORT.granularity || 'auto').toLowerCase();
-      if (gran === 'month')  {{ timeAxis.scale = 'month'; timeAxis.step = 1; }}
-      if (gran === 'quarter'){{ timeAxis.scale = 'month'; timeAxis.step = 3; }}
-
-      const options = {{
-        orientation: 'top',
-        margin: {{ item: 8, axis: 12 }},
-        start: start.toISOString().slice(0,10),
-        end:   end.toISOString().slice(0,10),
-        timeAxis,
-        selectable: false,
-        template: function(item) {{
-          if (item.type === 'background') return '';
-          const t = item.content ? `<div class="ttl">${{item.content}}</div>` : '';
-          const s = item.subtitle ? `<div class="sub">${{item.subtitle}}</div>` : '';
-          return t + s;
-        }},
-      }};
-
-      const exTl = new vis.Timeline(node, ITEMS, (GROUPS && GROUPS.length ? GROUPS : undefined), options);
-      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
-
-      // Inline vis CSS so the SVG keeps the look
-      try {{
-        const cssText = await fetch({json.dumps(_VIS_CSS_URLS[0])}).then(r => r.ok ? r.text() : "");
-        if (cssText) {{
-          const st = document.createElement('style');
-          st.textContent = cssText;
-          node.prepend(st);
-        }}
-      }} catch (_) {{}}
-
-      const svgDoc = elementToSVG(node);
-      await inlineResources(svgDoc.documentElement);
-      const svgText = new XMLSerializer().serializeToString(svgDoc);
-
-      const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-      const filename = `timeline_${{start.toISOString().slice(0,10)}}_to_${{end.toISOString().slice(0,10)}}_${{ts}}.svg`;
-      const blob = new Blob([svgText], {{ type: 'image/svg+xml' }});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); setTimeout(()=>{{ URL.revokeObjectURL(url); a.remove(); }}, 0);
-
-      exTl.destroy(); wrap.remove();
-    }}
-  </script>
-</body>
-</html>
-    """
-    components.html(html, height=height_px + 36, scrolling=False)
+          if (item.type
