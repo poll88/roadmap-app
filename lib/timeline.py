@@ -1,4 +1,5 @@
-# lib/timeline.py — stable render (non-module), SVG export (module), transparent bg
+# lib/timeline.py — stable render with vis.js load-wait, visible error banner,
+# SVG export module isolated, transparent background, no click selection.
 
 import json
 from datetime import date, datetime, timedelta
@@ -43,11 +44,13 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     win_start, win_end = _window_longest(items)
     ws, we = win_start.isoformat(), win_end.isoformat()
 
-    # light per-row backgrounds spanning the window
-    bg = [{
-        "id": f"bg-{g['id']}", "group": g["id"],
-        "start": ws, "end": we, "type": "background", "className": "row-bg"
-    } for g in groups]
+    # background per row across window (only if we have groups)
+    bg = []
+    if groups:
+        bg = [{
+            "id": f"bg-{g['id']}", "group": g["id"],
+            "start": ws, "end": we, "type": "background", "className": "row-bg"
+        } for g in groups]
 
     items_json  = json.dumps(items + bg, default=str)
     groups_json = json.dumps(groups, default=str)
@@ -64,7 +67,9 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
   <style>
     :root {{ --font: 'Montserrat', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, sans-serif; }}
     html, body {{ background: transparent; }}
-    body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
+    body, #timeline, .vis-timeline, .vis-item, .vis-item-content,
+    .vis-label, .vis-time-axis {{ font-family: var(--font); }}
+    #wrapper {{ position: relative; }}
     #timeline {{
       height:{height_px}px;
       background: transparent;     /* transparent background for export */
@@ -77,17 +82,26 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     .vis-item .vis-item-content {{ line-height:1.15 }}
     .ttl {{ font-weight:600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
-    /* selection disabled */
+    /* error banner */
+    #err {{
+      display:none; position:absolute; inset:0; padding:14px; border-radius:12px;
+      background: rgba(255, 248, 248, .96); color:#991B1B; border:1px solid #fecaca;
+      font-size:13px; line-height:1.35;
+    }}
+    #err strong {{ display:block; margin-bottom:6px; }}
   </style>
 </head>
 <body>
-  <div id="timeline"></div>
+  <div id="wrapper">
+    <div id="timeline"></div>
+    <div id="err"><strong>Timeline failed to load</strong><span id="errmsg"></span></div>
+  </div>
 
   <script src="{_VIS_JS}"></script>
 
-  <!-- 1) NON-MODULE SCRIPT: always renders the timeline (robust on iPad) -->
+  <!-- Base renderer (non-module). Waits for vis.js to be available. -->
   <script>
-    // Expose data to window so the module (if it loads) can reuse it
+    // Data payload exposed to both scripts
     window.__TIMELINE_DATA__ = {{
       ITEMS: {items_json},
       GROUPS: {groups_json},
@@ -102,32 +116,56 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }}
 
-    (function renderBaseTimeline() {{
+    function showErr(msg) {{
       try {{
-        const el = document.getElementById('timeline');
-        const D = window.__TIMELINE_DATA__;
-        const options = {{
-          orientation: 'top',
-          margin: {{ item: 8, axis: 12 }},
-          start: D.WS,
-          end:   D.WE,
-          selectable: false,
-          template: function(item) {{
-            if (item.type === 'background') return '';
-            const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
-            const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
-            return t + s;
-          }},
-        }};
-        // Create timeline; keep a reference for debugging
-        window.__TL__ = new vis.Timeline(el, D.ITEMS, D.GROUPS, options);
+        const box = document.getElementById('err');
+        const span = document.getElementById('errmsg');
+        span.textContent = String(msg || 'Unknown error');
+        box.style.display = 'block';
+      }} catch(_) {{}}
+    }}
+
+    function renderTimeline() {{
+      const el = document.getElementById('timeline');
+      const D = window.__TIMELINE_DATA__;
+      const options = {{
+        orientation: 'top',
+        margin: {{ item: 8, axis: 12 }},
+        start: D.WS,
+        end:   D.WE,
+        selectable: false,
+        template: function(item) {{
+          if (item.type === 'background') return '';
+          const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
+          const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
+          return t + s;
+        }},
+      }};
+      try {{
+        // use DataSet for extra safety
+        const items  = new vis.DataSet(D.ITEMS || []);
+        const groups = new vis.DataSet(D.GROUPS || []);
+        if (window.__TL__ && window.__TL__.destroy) window.__TL__.destroy();
+        window.__TL__ = new vis.Timeline(el, items, groups, options);
       }} catch (e) {{
-        console.error('Timeline render failed:', e);
+        console.error(e);
+        showErr(e.message || e);
       }}
-    }})();
+    }}
+
+    (function waitForVis(n) {{
+      if (window.vis && window.vis.Timeline) {{
+        // give layout a tick then render
+        return requestAnimationFrame(() => renderTimeline());
+      }}
+      if (n > 60) {{  // ~3s
+        return showErr('vis.js did not load.');
+      }}
+      setTimeout(() => waitForVis(n + 1), 50);
+    })(0);
   </script>
 
-  <!-- 2) MODULE SCRIPT: only handles SVG export; if it fails to load, timeline still shows -->
+  <!-- SVG export kept in a separate module; if it fails, base render is unaffected -->
   <script type="module">
     import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
 
@@ -135,15 +173,11 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       if (!EXPORT || Object.keys(EXPORT).length === 0) return;
 
       const D = window.__TIMELINE_DATA__;
-      const ITEMS  = D.ITEMS;
-      const GROUPS = D.GROUPS;
+      const ITEMS  = D.ITEMS || [];
+      const GROUPS = D.GROUPS || [];
 
-      // Compute span across items
-      function toDate(v) {{
-        if (!v) return new Date();
-        if (typeof v === 'string') return new Date(v);
-        return new Date(v);
-      }}
+      // compute span
+      const toDate = v => new Date(typeof v === 'string' ? v : v);
       let smin = null, emax = null;
       for (const it of ITEMS) {{
         if (it.type === 'background') continue;
@@ -154,21 +188,20 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       }}
       if (!smin || !emax) return;
 
-      function monthAdd(d, delta) {{
+      const monthAdd = (d, delta) => {{
         const dt = new Date(d);
         const m = dt.getUTCMonth() + delta;
         dt.setUTCMonth(m, 1);
         return dt;
-      }}
-      const padMonths = Number(EXPORT.padMonths || 0);
-      const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -padMonths);
-      const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), padMonths + 1);
+      }};
+      const pad = Number(EXPORT.padMonths || 0);
+      const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
+      const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
 
-      // Offscreen container
+      // offscreen container
       const pxPerInch = 96;
-      const widthInches = Number(EXPORT.widthInches || 24);
-      const cssWidth = Math.max(800, Math.round(widthInches * pxPerInch));
-      const rows = Math.max(1, GROUPS.length);
+      const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
+      const rows      = Math.max(1, GROUPS.length);
       const cssHeight = Math.max(260, 80 * rows + 120);
 
       const wrap = document.createElement('div');
@@ -205,12 +238,12 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
           return t + s;
         }},
       }};
-      const exTl = new vis.Timeline(node, ITEMS, GROUPS, options);
 
-      // Wait for layout
+      // render offscreen TL
+      const exTl = new vis.Timeline(node, ITEMS, GROUPS, options);
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
 
-      // Inline resources -> SVG text
+      // make self-contained SVG (transparent bg)
       const svgDoc = elementToSVG(node);
       await inlineResources(svgDoc.documentElement);
       const svgText = new XMLSerializer().serializeToString(svgDoc);
@@ -230,15 +263,14 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
 
     try {{
       const EXPORT = window.__TIMELINE_DATA__ && window.__TIMELINE_DATA__.EXPORT;
-      // Run once (sidebar sets the payload, app clears it next render)
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
       exportSVG(EXPORT);
     }} catch (err) {{
-      // If this fails, it won't break the base timeline render
+      // export failure is non-fatal by design
       console.warn('SVG export module failed:', err);
     }}
   </script>
 </body>
 </html>
     """
-    components.html(html, height=height_px + 20, scrolling=False)
+    components.html(html, height=height_px + 24, scrolling=False)
