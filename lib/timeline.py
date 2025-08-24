@@ -1,8 +1,4 @@
-# lib/timeline.py — clean render (no debug UI) + reliable SVG download overlay
-# - Multi-CDN loader for vis.js/CSS (robust on iPad)
-# - No click selection
-# - Exact-style SVG export with transparent background
-# - Shows a small "Download SVG" overlay after export (works on iPad Safari)
+# lib/timeline.py — clean render + reliable SVG download overlay (fixed module if/return)
 
 import json
 from datetime import date, datetime, timedelta
@@ -39,7 +35,8 @@ def _window_longest(items):
         e = _to_date(it.get("end") or it.get("start"))
         if e < s: s, e = e, s
         span = max(1, (e - s).days)
-        if span > best_span: best_span, best = span, (s, e)
+        if span > best_span:
+            best_span = span; best = (s, e)
     if not best:
         t = date.today()
         buf = max(MIN_BUFFER_DAYS, 30)
@@ -175,7 +172,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     // Render after CSS+JS are in
     (async function boot() {{
       const D = window.__TL_DATA__;
-      await loadCssSeq(D.CSS_URLS).catch(()=>{});
+      await loadCssSeq(D.CSS_URLS).catch(()=>{{}});
       await loadScriptSeq(D.JS_URLS);
 
       const el = document.getElementById('timeline');
@@ -189,4 +186,124 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         end:   D.WE,
         selectable: false,
         template: function(item) {{
-          if (item.type
+          if (item.type === 'background') return '';
+          const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+          const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
+          const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
+          return t + s;
+        }},
+      }};
+      if (groups.length) {{
+        window.__TL__ = new vis.Timeline(el, new vis.DataSet(items), new vis.DataSet(groups), options);
+      }} else {{
+        window.__TL__ = new vis.Timeline(el, new vis.DataSet(items), options);
+      }}
+    }})();
+  </script>
+
+  <!-- SVG export in a separate module so base render can never break -->
+  <script type="module">
+    import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
+    (async () => {{
+      const D = window.__TL_DATA__;
+      const EXPORT = D && D.EXPORT;
+      if (!EXPORT || !Object.keys(EXPORT).length) {{
+        return;
+      }}
+
+      const ITEMS  = D.ITEMS || [];
+      const GROUPS = D.GROUPS || [];
+
+      const toDate = v => new Date(typeof v === 'string' ? v : v);
+      let smin=null, emax=null;
+      for (const it of ITEMS) {{
+        if (!it || it.type === 'background') continue;
+        const s = toDate(it.start), e = toDate(it.end || it.start);
+        const a = s < e ? s : e, b = s < e ? e : s;
+        if (!smin || a < smin) smin = a;
+        if (!emax || b > emax) emax = b;
+      }}
+      if (!smin || !emax) {{
+        return;
+      }}
+
+      const monthAdd = (d, delta) => {{ const dt=new Date(d); const m=dt.getUTCMonth()+delta; dt.setUTCMonth(m,1); return dt; }};
+      const pad = Number(EXPORT.padMonths || 0);
+      const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
+      const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
+
+      const pxPerInch = 96;
+      const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
+      const rows      = Math.max(1, GROUPS.length);
+      const cssHeight = Math.max(260, 80 * rows + 120);
+
+      const wrap = document.createElement('div');
+      wrap.style.position = 'fixed'; wrap.style.left = '-100000px'; wrap.style.top = '0';
+      wrap.style.width = cssWidth + 'px'; wrap.style.background = 'transparent';
+      document.body.appendChild(wrap);
+
+      const node = document.createElement('div');
+      node.style.width = '100%'; node.style.height = cssHeight + 'px'; node.style.background = 'transparent';
+      node.className = 'vis-timeline';
+      wrap.appendChild(node);
+
+      const timeAxis = {{}};
+      const gran = String(EXPORT.granularity || 'auto').toLowerCase();
+      if (gran === 'month')  {{ timeAxis.scale = 'month'; timeAxis.step = 1; }}
+      if (gran === 'quarter'){{ timeAxis.scale = 'month'; timeAxis.step = 3; }}
+
+      const options = {{
+        orientation: 'top',
+        margin: {{ item: 8, axis: 12 }},
+        start: start.toISOString().slice(0,10),
+        end:   end.toISOString().slice(0,10),
+        timeAxis,
+        selectable: false,
+        template: function(item) {{
+          if (item.type === 'background') return '';
+          const t = item.content ? `<div class="ttl">${{item.content}}</div>` : '';
+          const s = item.subtitle ? `<div class="sub">${{item.subtitle}}</div>` : '';
+          return t + s;
+        }},
+      }};
+      const exTl = new vis.Timeline(node, ITEMS, (GROUPS && GROUPS.length ? GROUPS : undefined), options);
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
+
+      // Inline vis CSS so the SVG keeps the look, then make a self-contained SVG
+      try {{
+        const cssText = await fetch({json.dumps(_VIS_CSS_URLS[0])}).then(r => r.ok ? r.text() : "");
+        if (cssText) {{
+          const st = document.createElement('style'); st.textContent = cssText; node.prepend(st);
+        }}
+      }} catch (_) {{}}
+      const svgDoc = elementToSVG(node);
+      await inlineResources(svgDoc.documentElement);
+      const svgText = new XMLSerializer().serializeToString(svgDoc);
+
+      // Prepare blob + overlay download link (works on iPad Safari)
+      const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+      const filename = `timeline_${{start.toISOString().slice(0,10)}}_to_${{end.toISOString().slice(0,10)}}_${{ts}}.svg`;
+      const blob = new Blob([svgText], {{ type: 'image/svg+xml' }});
+      const url  = URL.createObjectURL(blob);
+
+      const box  = document.getElementById('dlbox');
+      const link = document.getElementById('svg_link');
+      const btnX = document.getElementById('close_dl');
+      link.href = url; link.download = filename; link.textContent = "Download SVG";
+      box.style.display = 'block';
+      btnX.onclick = () => {{ box.style.display = 'none'; URL.revokeObjectURL(url); }};
+      link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 0);
+
+      // On desktop (non-iOS) auto-click; iOS requires a tap within the iframe
+      const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (!isiOS) {{
+        setTimeout(() => link.click(), 80);
+      }}
+
+      exTl.destroy(); wrap.remove();
+    }})();
+  </script>
+</body>
+</html>
+    """
+    components.html(html, height=height_px + 20, scrolling=False)
