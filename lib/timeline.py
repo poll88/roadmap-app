@@ -1,4 +1,4 @@
-# lib/timeline.py — DOM→SVG export (exact style), transparent background, no click selection
+# lib/timeline.py — stable render (non-module), SVG export (module), transparent bg
 
 import json
 from datetime import date, datetime, timedelta
@@ -43,7 +43,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     win_start, win_end = _window_longest(items)
     ws, we = win_start.isoformat(), win_end.isoformat()
 
-    # light per-row background spans across window (kept visible)
+    # light per-row backgrounds spanning the window
     bg = [{
         "id": f"bg-{g['id']}", "group": g["id"],
         "start": ws, "end": we, "type": "background", "className": "row-bg"
@@ -67,7 +67,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
     #timeline {{
       height:{height_px}px;
-      background: transparent;    /* transparent background for export */
+      background: transparent;     /* transparent background for export */
       border-radius:12px;
       border:1px solid #e7e9f2;
     }}
@@ -84,8 +84,17 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
   <div id="timeline"></div>
 
   <script src="{_VIS_JS}"></script>
-  <script type="module">
-    import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
+
+  <!-- 1) NON-MODULE SCRIPT: always renders the timeline (robust on iPad) -->
+  <script>
+    // Expose data to window so the module (if it loads) can reuse it
+    window.__TIMELINE_DATA__ = {{
+      ITEMS: {items_json},
+      GROUPS: {groups_json},
+      EXPORT: {export_json},
+      WS: "{ws}",
+      WE: "{we}"
+    }};
 
     function esc(s) {{
       return String(s ?? "")
@@ -93,29 +102,42 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }}
 
-    const ITEMS  = {items_json};
-    const GROUPS = {groups_json};
-    const EXPORT = {export_json};
+    (function renderBaseTimeline() {{
+      try {{
+        const el = document.getElementById('timeline');
+        const D = window.__TIMELINE_DATA__;
+        const options = {{
+          orientation: 'top',
+          margin: {{ item: 8, axis: 12 }},
+          start: D.WS,
+          end:   D.WE,
+          selectable: false,
+          template: function(item) {{
+            if (item.type === 'background') return '';
+            const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
+            const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
+            return t + s;
+          }},
+        }};
+        // Create timeline; keep a reference for debugging
+        window.__TL__ = new vis.Timeline(el, D.ITEMS, D.GROUPS, options);
+      }} catch (e) {{
+        console.error('Timeline render failed:', e);
+      }}
+    }})();
+  </script>
 
-    const container = document.getElementById('timeline');
+  <!-- 2) MODULE SCRIPT: only handles SVG export; if it fails to load, timeline still shows -->
+  <script type="module">
+    import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
 
-    const options = {{
-      orientation: 'top',
-      margin: {{ item: 8, axis: 12 }},
-      start: '{ws}',
-      end:   '{we}',
-      selectable: false,
-      template: function(item) {{
-        if (item.type === 'background') return '';
-        const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
-        const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
-        return t + s;
-      }},
-    }};
+    async function exportSVG(EXPORT) {{
+      if (!EXPORT || Object.keys(EXPORT).length === 0) return;
 
-    const tl = new vis.Timeline(container, ITEMS, GROUPS, options);
+      const D = window.__TIMELINE_DATA__;
+      const ITEMS  = D.ITEMS;
+      const GROUPS = D.GROUPS;
 
-    async function exportSVG(granularity, padMonths, widthInches) {{
       // Compute span across items
       function toDate(v) {{
         if (!v) return new Date();
@@ -130,10 +152,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         if (!smin || a < smin) smin = a;
         if (!emax || b > emax) emax = b;
       }}
-      if (!smin || !emax) {{
-        alert('No items to export.');
-        return;
-      }}
+      if (!smin || !emax) return;
 
       function monthAdd(d, delta) {{
         const dt = new Date(d);
@@ -141,27 +160,26 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         dt.setUTCMonth(m, 1);
         return dt;
       }}
+      const padMonths = Number(EXPORT.padMonths || 0);
       const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -padMonths);
       const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), padMonths + 1);
 
-      // Offscreen container with transparent bg
-      const pxPerInch = 96; // CSS pixels
+      // Offscreen container
+      const pxPerInch = 96;
+      const widthInches = Number(EXPORT.widthInches || 24);
       const cssWidth = Math.max(800, Math.round(widthInches * pxPerInch));
       const rows = Math.max(1, GROUPS.length);
       const cssHeight = Math.max(260, 80 * rows + 120);
 
       const wrap = document.createElement('div');
-      wrap.id = 'export-wrap';
       wrap.style.position = 'fixed';
       wrap.style.left = '-100000px';
       wrap.style.top = '0';
       wrap.style.width = cssWidth + 'px';
       wrap.style.background = 'transparent';
-      wrap.style.padding = '0';
       document.body.appendChild(wrap);
 
       const node = document.createElement('div');
-      node.id = 'export-timeline';
       node.style.width = '100%';
       node.style.height = cssHeight + 'px';
       node.style.background = 'transparent';
@@ -169,29 +187,34 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       wrap.appendChild(node);
 
       const timeAxis = {{}};
-      if (granularity === 'month') {{
-        timeAxis.scale = 'month';
-        timeAxis.step = 1;
-      }} else if (granularity === 'quarter') {{
-        timeAxis.scale = 'month';
-        timeAxis.step = 3;
-      }}
+      const gran = String(EXPORT.granularity || 'auto').toLowerCase();
+      if (gran === 'month')  {{ timeAxis.scale = 'month';  timeAxis.step = 1; }}
+      if (gran === 'quarter'){{ timeAxis.scale = 'month';  timeAxis.step = 3; }}
 
-      const exOpts = Object.assign({{}}, options, {{
+      const options = {{
+        orientation: 'top',
+        margin: {{ item: 8, axis: 12 }},
         start: start.toISOString().slice(0,10),
         end:   end.toISOString().slice(0,10),
-        timeAxis
-      }});
-      const exTl = new vis.Timeline(node, ITEMS, GROUPS, exOpts);
+        timeAxis,
+        selectable: false,
+        template: function(item) {{
+          if (item.type === 'background') return '';
+          const t = item.content ? `<div class="ttl">${{item.content}}</div>` : '';
+          const s = item.subtitle ? `<div class="sub">${{item.subtitle}}</div>` : '';
+          return t + s;
+        }},
+      }};
+      const exTl = new vis.Timeline(node, ITEMS, GROUPS, options);
 
+      // Wait for layout
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
 
-      // Build a self-contained SVG (inlines fonts, styles, images)
+      // Inline resources -> SVG text
       const svgDoc = elementToSVG(node);
       await inlineResources(svgDoc.documentElement);
       const svgText = new XMLSerializer().serializeToString(svgDoc);
 
-      // Download as SVG (transparent background)
       const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
       const filename = `timeline_${{start.toISOString().slice(0,10)}}_to_${{end.toISOString().slice(0,10)}}_${{ts}}.svg`;
       const blob = new Blob([svgText], {{ type: 'image/svg+xml' }});
@@ -205,16 +228,15 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       wrap.remove();
     }}
 
-    // One-shot export triggered from Streamlit (sidebar button)
-    (async () => {{
-      if (EXPORT && Object.keys(EXPORT).length) {{
-        const gran = (EXPORT.granularity || 'auto').toLowerCase();
-        const pad  = Number(EXPORT.padMonths || 0);
-        const win  = Number(EXPORT.widthInches || 24);
-        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
-        await exportSVG(gran, pad, win);
-      }}
-    }})();
+    try {{
+      const EXPORT = window.__TIMELINE_DATA__ && window.__TIMELINE_DATA__.EXPORT;
+      // Run once (sidebar sets the payload, app clears it next render)
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
+      exportSVG(EXPORT);
+    }} catch (err) {{
+      // If this fails, it won't break the base timeline render
+      console.warn('SVG export module failed:', err);
+    }}
   </script>
 </body>
 </html>
