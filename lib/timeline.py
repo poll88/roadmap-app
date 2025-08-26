@@ -1,4 +1,5 @@
-# lib/timeline.py — safe (no f-strings), robust render, iPad-friendly SVG download pill
+# lib/timeline.py — robust vis render + PNG export (exact style), iPad-friendly
+# Uses dom-to-image-more to rasterize the DOM; shows in-frame "Open PNG" pill.
 
 import json
 from datetime import date, datetime, timedelta
@@ -13,6 +14,11 @@ _VIS_JS_URLS = [
     "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js",
     "https://cdn.jsdelivr.net/npm/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js",
     "https://cdnjs.cloudflare.com/ajax/libs/vis-timeline/7.7.3/vis-timeline-graph2d.min.js",
+]
+_DOM_TO_IMG_URLS = [
+    "https://cdn.jsdelivr.net/npm/dom-to-image-more@3.3.0/dist/dom-to-image-more.min.js",
+    "https://unpkg.com/dom-to-image-more@3.3.0/dist/dom-to-image-more.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/dom-to-image-more/3.3.0/dom-to-image-more.min.js",
 ]
 
 BUFFER_PCT = 0.15
@@ -53,7 +59,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     win_start, win_end = _window_longest(items)
     ws, we = win_start.isoformat(), win_end.isoformat()
 
-    # Per-row light backgrounds (only if groups exist)
+    # Light row backgrounds when groups exist
     bg = []
     if groups:
         bg = [{
@@ -66,6 +72,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     export_json = json.dumps(export or {}, default=str)
     css_urls    = json.dumps(_VIS_CSS_URLS)
     js_urls     = json.dumps(_VIS_JS_URLS)
+    dti_urls    = json.dumps(_DOM_TO_IMG_URLS)
 
     html_template = """
 <!doctype html>
@@ -90,27 +97,38 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     .vis-item .vis-item-content { line-height:1.15 }
     .ttl { font-weight:600 }
     .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
-    /* Download pill */
-    #dlbox {
+
+    /* Download/preview pill (always visible on export) */
+    #pngbox {
       display:none; position:absolute; right:12px; bottom:12px; z-index:100000;
       background:#fff; border:1px solid #e5e7eb; border-radius:10px;
       box-shadow:0 6px 18px rgba(16,24,40,.12); padding:10px 12px; font-size:12px;
+      max-width: 60%;
     }
-    #dlbox a {
+    #pngbox .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #pngbox a {
       display:inline-flex; align-items:center; justify-content:center;
       padding:9px 12px; border-radius:8px; border:1px solid #cbd5e1;
       text-decoration:none; font-weight:700; color:#0f172a;
     }
-    #dlbox button {
-      margin-left:10px; padding:6px 8px; border-radius:8px; border:1px solid #e5e7eb;
+    #pngbox button {
+      padding:6px 8px; border-radius:8px; border:1px solid #e5e7eb;
       background:#f8fafc; color:#334155; cursor:pointer;
     }
+    #png_preview { display:block; max-width:220px; height:auto; border-radius:6px; border:1px solid #e5e7eb; }
   </style>
 </head>
 <body>
   <div id="wrap">
     <div id="timeline"></div>
-    <div id="dlbox"><a id="svg_link" download target="_blank" rel="noopener">Download SVG</a><button id="close_dl">✕</button></div>
+    <div id="pngbox">
+      <div class="row">
+        <a id="png_open" target="_blank" rel="noopener">Open PNG</a>
+        <button id="png_close">✕</button>
+      </div>
+      <img id="png_preview" alt="preview"/>
+      <div style="font-size:11px;color:#475569;margin-top:6px">Tip: on iPad, tap “Open PNG”, then use the Share icon to Save Image.</div>
+    </div>
   </div>
 
   <script>
@@ -122,7 +140,8 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       WS: "__WS__",
       WE: "__WE__",
       CSS_URLS: __CSS_URLS__,
-      JS_URLS: __JS_URLS__
+      JS_URLS: __JS_URLS__,
+      DTI_URLS: __DTI_URLS__
     };
 
     function loadCssSeq(urls) {
@@ -143,7 +162,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       return new Promise((resolve, reject) => {
         let i=0;
         const next=()=>{
-          if(i>=urls.length) return reject(new Error("vis.js failed"));
+          if(i>=urls.length) return reject(new Error("script failed: " + urls.join(", ")));
           const s=document.createElement('script');
           s.src=urls[i]; s.async=true; s.crossOrigin='anonymous';
           s.onload=()=>resolve(urls[i]);
@@ -193,7 +212,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const EX = D.EXPORT;
       if (EX && Object.keys(EX).length) {
         await new Promise(r => requestAnimationFrame(() => setTimeout(r, 140)));
-        generateSVG(EX);
+        exportPNG(EX);
       }
     })();
 
@@ -207,10 +226,13 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       return "";
     }
 
-    async function generateSVG(EXPORT) {
+    async function exportPNG(EXPORT) {
       const D = window.__TL_DATA__;
       const ITEMS  = D.ITEMS || [];
       const GROUPS = D.GROUPS || [];
+
+      // Load dom-to-image-more only when needed
+      await loadScriptSeq(D.DTI_URLS);
 
       // Compute span
       const toDate = v => new Date(typeof v === 'string' ? v : v);
@@ -229,19 +251,22 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
       const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
 
-      // Offscreen TL sized for export
-      const pxPerInch = 96;
-      const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
-      const rows      = Math.max(1, GROUPS.length);
-      const cssHeight = Math.max(260, 80 * rows + 120);
+      // Size for export: inches * 300 ppi
+      const widthIn = Number(EXPORT.widthInches || 24);
+      const widthPx = Math.max(1200, Math.round(widthIn * 300));
+      const rows = Math.max(1, GROUPS.length);
+      const heightPx = Math.max(260, 80 * rows + 120);
 
+      // Offscreen render node
       const wrap = document.createElement('div');
       wrap.style.position='fixed'; wrap.style.left='-100000px'; wrap.style.top='0';
-      wrap.style.width = cssWidth + 'px'; wrap.style.background='transparent';
+      wrap.style.width = widthPx + 'px'; wrap.style.background='transparent';
       document.body.appendChild(wrap);
 
       const node = document.createElement('div');
-      node.style.width='100%'; node.style.height=cssHeight + 'px'; node.style.background='transparent';
+      node.style.width = '100%';
+      node.style.height = heightPx + 'px';
+      node.style.background = 'transparent';
       node.className='vis-timeline';
       wrap.appendChild(node);
 
@@ -255,47 +280,51 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         margin: { item: 8, axis: 12 },
         start: start.toISOString().slice(0,10),
         end:   end.toISOString().slice(0,10),
-        timeAxis, selectable:false,
+        timeAxis,
+        selectable:false,
         template: function(item){
           if(item.type==='background') return '';
+          const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
           const t = item.content ? `<div class="ttl">${esc(item.content)}</div>` : '';
           const s = item.subtitle ? `<div class="sub">${esc(item.subtitle)}</div>` : '';
           return t + s;
         },
       };
       const exTl = new vis.Timeline(node, ITEMS, (GROUPS && GROUPS.length ? GROUPS : undefined), options);
-      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 140)));
 
+      // Inline vis CSS so the rasterizer uses the correct styling
       const visCss = await fetchCssText(__CSS_URLS__);
       if (visCss) {
         const st = document.createElement('style'); st.textContent = visCss; node.prepend(st);
       }
 
-      // Build SVG via foreignObject (transparent)
-      const cleanHTML = node.outerHTML.replace(/<script[\s\S]*?<\/script>/gi, "");
-      const svg =
-`<svg xmlns="http://www.w3.org/2000/svg" width="${cssWidth}" height="${cssHeight}" viewBox="0 0 ${cssWidth} ${cssHeight}">
-  <foreignObject width="100%" height="100%">
-    <div xmlns="http://www.w3.org/1999/xhtml" style="width:${cssWidth}px;height:${cssHeight}px;background:transparent;">
-      ${cleanHTML}
-    </div>
-  </foreignObject>
-</svg>`;
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 140)));
 
+      // Render PNG with transparency
+      const blob = await window.domtoimage.toBlob(node, {
+        bgcolor: 'transparent',
+        width: widthPx,
+        height: heightPx,
+        style: { background: 'rgba(0,0,0,0)' },
+        pixelRatio: 1
+      });
+
+      const url = URL.createObjectURL(blob);
       const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-      const filename = `timeline_${start.toISOString().slice(0,10)}_to_${end.toISOString().slice(0,10)}_${ts}.svg`;
-      const blob = new Blob([svg], { type: 'image/svg+xml' });
-      const url  = URL.createObjectURL(blob);
+      const filename = `timeline_${start.toISOString().slice(0,10)}_to_${end.toISOString().slice(0,10)}_${ts}.png`;
 
-      const box  = document.getElementById('dlbox');
-      const link = document.getElementById('svg_link');
-      const btnX = document.getElementById('close_dl');
-
-      link.href = url; link.download = filename; link.textContent = "Download SVG";
+      // Show in-frame pill + preview (iPad users can tap Open PNG, then Save Image)
+      const box  = document.getElementById('pngbox');
+      const link = document.getElementById('png_open');
+      const close= document.getElementById('png_close');
+      const img  = document.getElementById('png_preview');
+      link.href = url; link.download = filename;
+      img.src = url;
       box.style.display = 'block';
-      btnX.onclick = () => { box.style.display='none'; URL.revokeObjectURL(url); };
-      link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 0);
+      close.onclick = () => { box.style.display='none'; URL.revokeObjectURL(url); };
+      link.onclick  = () => setTimeout(() => URL.revokeObjectURL(url), 0);
 
+      // Desktop convenience: auto-trigger download
       const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
       if (!isiOS) { setTimeout(() => link.click(), 90); }
 
@@ -316,6 +345,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         .replace("__WE__", we)
         .replace("__CSS_URLS__", css_urls)
         .replace("__JS_URLS__", js_urls)
+        .replace("__DTI_URLS__", dti_urls)
     )
-
     components.html(html, height=height_px + 20, scrolling=False)
