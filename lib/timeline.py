@@ -1,10 +1,9 @@
-# lib/timeline.py — clean render + reliable SVG download overlay (fixed module if/return)
+# lib/timeline.py — robust render + SVG export (no modules), iPad-friendly overlay
 
 import json
 from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
 
-# Multiple CDNs for reliability
 _VIS_CSS_URLS = [
   "https://unpkg.com/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css",
   "https://cdn.jsdelivr.net/npm/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.css",
@@ -15,8 +14,6 @@ _VIS_JS_URLS = [
   "https://cdn.jsdelivr.net/npm/vis-timeline@7.7.3/dist/vis-timeline-graph2d.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/vis-timeline/7.7.3/vis-timeline-graph2d.min.js",
 ]
-# ESM for SVG export only (base render doesn’t depend on it)
-_DOM_TO_SVG_ESM = "https://cdn.jsdelivr.net/npm/dom-to-svg@0.12.2/lib/index.js"
 
 BUFFER_PCT = 0.15
 MIN_BUFFER_DAYS = 14
@@ -35,8 +32,7 @@ def _window_longest(items):
         e = _to_date(it.get("end") or it.get("start"))
         if e < s: s, e = e, s
         span = max(1, (e - s).days)
-        if span > best_span:
-            best_span = span; best = (s, e)
+        if span > best_span: best_span, best = span, (s, e)
     if not best:
         t = date.today()
         buf = max(MIN_BUFFER_DAYS, 30)
@@ -52,7 +48,7 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     win_start, win_end = _window_longest(items)
     ws, we = win_start.isoformat(), win_end.isoformat()
 
-    # Per-row light backgrounds (only if groups exist)
+    # Background items per row (only if groups exist)
     bg = []
     if groups:
         bg = [{
@@ -70,37 +66,38 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <!-- Montserrat for a modern look -->
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {{ --font: 'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; }}
-    html, body {{ background: transparent; margin:0; padding:0; }}
+    html, body {{ background: transparent; margin: 0; padding: 0; }}
     body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
     #wrap {{ position: relative; }}
     #timeline {{
       height:{height_px}px;
       background: transparent;
-      border-radius:12px; border:1px solid #e7e9f2;
+      border-radius: 12px;
+      border: 1px solid #e7e9f2;
     }}
     .row-bg {{ background: rgba(37,99,235,.05) }}
-    .vis-time-axis .text {{ font-size:12px; font-weight:500 }}
-    .vis-labelset .vis-label .vis-inner {{ font-weight:600 }}
-    .vis-item .vis-item-content {{ line-height:1.15 }}
-    .ttl {{ font-weight:600 }}
+    .vis-time-axis .text {{ font-size: 12px; font-weight: 500 }}
+    .vis-labelset .vis-label .vis-inner {{ font-weight: 600 }}
+    .vis-item .vis-item-content {{ line-height: 1.15 }}
+    .ttl {{ font-weight: 600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
 
-    /* Small overlay that appears AFTER export is ready (esp. for iPad Safari) */
+    /* Download overlay that appears after export is generated (works on iPad) */
     #dlbox {{
-      display:none; position:absolute; right:10px; top:10px;
-      background:#ffffff; border:1px solid #e5e7eb; border-radius:10px;
-      box-shadow:0 6px 18px rgba(16,24,40,.08); padding:10px 12px; z-index:20;
-      font-size:12px;
+      display: none;
+      position: absolute; right: 10px; top: 10px;
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(16,24,40,.08); padding: 10px 12px;
+      z-index: 100000; font-size: 12px;
     }}
     #dlbox .row {{ display:flex; align-items:center; gap:8px; }}
     #dlbox a {{
       display:inline-flex; align-items:center; justify-content:center;
-      padding:8px 10px; border-radius:8px; border:1px solid #cbd5e1;
+      padding: 8px 10px; border-radius: 8px; border: 1px solid #cbd5e1;
       text-decoration:none; font-weight:600; color:#0f172a;
     }}
     #dlbox button {{
@@ -114,14 +111,14 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     <div id="timeline"></div>
     <div id="dlbox">
       <div class="row">
-        <a id="svg_link" download target="_blank">Download SVG</a>
+        <a id="svg_link" download target="_blank" rel="noopener">Download SVG</a>
         <button id="close_dl" title="Close">✕</button>
       </div>
     </div>
   </div>
 
   <script>
-    // Data shared by both scripts
+    // Shared data
     window.__TL_DATA__ = {{
       ITEMS: {items_json},
       GROUPS: {groups_json},
@@ -132,14 +129,15 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       JS_URLS: {json.dumps(_VIS_JS_URLS)}
     }};
 
+    // ---- helpers ----
     function loadCssSeq(urls) {{
       return new Promise((resolve) => {{
-        let i = 0, done = false;
+        let i=0, done=false;
         const next = () => {{
           if (i >= urls.length) return resolve("none");
           const l = document.createElement('link');
-          l.rel = 'stylesheet'; l.href = urls[i]; l.crossOrigin = 'anonymous';
-          l.onload = () => {{ if (!done) {{ done = true; resolve(urls[i]); }} }};
+          l.rel='stylesheet'; l.href=urls[i]; l.crossOrigin='anonymous';
+          l.onload = () => {{ if (!done) {{ done=true; resolve(urls[i]); }} }};
           l.onerror = () => {{ l.remove(); i++; next(); }};
           document.head.appendChild(l);
         }};
@@ -148,31 +146,32 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     }}
     function loadScriptSeq(urls) {{
       return new Promise((resolve, reject) => {{
-        let i = 0;
+        let i=0;
         const next = () => {{
           if (i >= urls.length) return reject(new Error("vis.js failed"));
-          const s = document.createElement('script');
-          s.src = urls[i]; s.async = true; s.crossOrigin = 'anonymous';
-          s.onload = () => resolve(urls[i]);
-          s.onerror = () => {{ s.remove(); i++; next(); }};
+          const s=document.createElement('script');
+          s.src=urls[i]; s.async=true; s.crossOrigin='anonymous';
+          s.onload=()=>resolve(urls[i]);
+          s.onerror=()=>{{ s.remove(); i++; next(); }};
           document.head.appendChild(s);
         }};
         next();
       }});
     }}
     function stripGroupsIfMissing(items, groups) {{
-      const hasGroups = Array.isArray(groups) && groups.length > 0;
-      const anyGrouped = (items || []).some(it => it && it.group);
+      const hasGroups = Array.isArray(groups) && groups.length>0;
+      const anyGrouped = (items||[]).some(it => it && it.group);
       if (!hasGroups && anyGrouped) {{
-        return (items || []).map(it => {{ if (!it) return it; const c={{...it}}; delete c.group; return c; }});
+        return (items||[]).map(it => {{ if (!it) return it; const c={{...it}}; delete c.group; return c; }});
       }}
       return items || [];
     }}
+    const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
-    // Render after CSS+JS are in
+    // ---- render timeline ----
     (async function boot() {{
       const D = window.__TL_DATA__;
-      await loadCssSeq(D.CSS_URLS).catch(()=>{{}});
+      await loadCssSeq(D.CSS_URLS).catch(()=>{});
       await loadScriptSeq(D.JS_URLS);
 
       const el = document.getElementById('timeline');
@@ -187,7 +186,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         selectable: false,
         template: function(item) {{
           if (item.type === 'background') return '';
-          const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
           const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
           const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
           return t + s;
@@ -198,22 +196,32 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       }} else {{
         window.__TL__ = new vis.Timeline(el, new vis.DataSet(items), options);
       }}
-    }})();
-  </script>
 
-  <!-- SVG export in a separate module so base render can never break -->
-  <script type="module">
-    import {{ elementToSVG, inlineResources }} from "{_DOM_TO_SVG_ESM}";
-    (async () => {{
-      const D = window.__TL_DATA__;
-      const EXPORT = D && D.EXPORT;
-      if (!EXPORT || !Object.keys(EXPORT).length) {{
-        return;
+      // Run export if requested
+      const EX = D.EXPORT;
+      if (EX && Object.keys(EX).length) {{
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
+        generateSVG(EX);
       }}
+    }})();
 
+    // ---- SVG (foreignObject) export, no modules ----
+    async function fetchCssText(urls) {{
+      for (const u of urls) {{
+        try {{
+          const res = await fetch(u, {{ mode:'cors' }});
+          if (res.ok) return await res.text();
+        }} catch(_) {{}}
+      }}
+      return "";
+    }}
+
+    async function generateSVG(EXPORT) {{
+      const D = window.__TL_DATA__;
       const ITEMS  = D.ITEMS || [];
       const GROUPS = D.GROUPS || [];
 
+      // Compute span
       const toDate = v => new Date(typeof v === 'string' ? v : v);
       let smin=null, emax=null;
       for (const it of ITEMS) {{
@@ -223,15 +231,15 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         if (!smin || a < smin) smin = a;
         if (!emax || b > emax) emax = b;
       }}
-      if (!smin || !emax) {{
-        return;
-      }}
+      if (!smin || !emax) return;
 
+      // Time window with padding
       const monthAdd = (d, delta) => {{ const dt=new Date(d); const m=dt.getUTCMonth()+delta; dt.setUTCMonth(m,1); return dt; }};
       const pad = Number(EXPORT.padMonths || 0);
       const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
       const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
 
+      // Offscreen render node (re-render TL sized for export)
       const pxPerInch = 96;
       const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
       const rows      = Math.max(1, GROUPS.length);
@@ -249,8 +257,8 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
 
       const timeAxis = {{}};
       const gran = String(EXPORT.granularity || 'auto').toLowerCase();
-      if (gran === 'month')  {{ timeAxis.scale = 'month'; timeAxis.step = 1; }}
-      if (gran === 'quarter'){{ timeAxis.scale = 'month'; timeAxis.step = 3; }}
+      if (gran === 'month')  {{ timeAxis.scale = 'month';  timeAxis.step = 1; }}
+      if (gran === 'quarter'){{ timeAxis.scale = 'month';  timeAxis.step = 3; }}
 
       const options = {{
         orientation: 'top',
@@ -261,29 +269,36 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         selectable: false,
         template: function(item) {{
           if (item.type === 'background') return '';
-          const t = item.content ? `<div class="ttl">${{item.content}}</div>` : '';
-          const s = item.subtitle ? `<div class="sub">${{item.subtitle}}</div>` : '';
+          const t = item.content ? `<div class="ttl">${{esc(item.content)}}</div>` : '';
+          const s = item.subtitle ? `<div class="sub">${{esc(item.subtitle)}}</div>` : '';
           return t + s;
         }},
       }};
       const exTl = new vis.Timeline(node, ITEMS, (GROUPS && GROUPS.length ? GROUPS : undefined), options);
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 120)));
 
-      // Inline vis CSS so the SVG keeps the look, then make a self-contained SVG
-      try {{
-        const cssText = await fetch({json.dumps(_VIS_CSS_URLS[0])}).then(r => r.ok ? r.text() : "");
-        if (cssText) {{
-          const st = document.createElement('style'); st.textContent = cssText; node.prepend(st);
-        }}
-      }} catch (_) {{}}
-      const svgDoc = elementToSVG(node);
-      await inlineResources(svgDoc.documentElement);
-      const svgText = new XMLSerializer().serializeToString(svgDoc);
+      // Inline vis CSS
+      const visCss = await fetchCssText({json.dumps(_VIS_CSS_URLS)});
+      if (visCss) {{
+        const st = document.createElement('style'); st.textContent = visCss; node.prepend(st);
+      }}
 
-      // Prepare blob + overlay download link (works on iPad Safari)
+      // Build SVG using foreignObject (transparent background)
+      const cleanHTML = node.outerHTML.replace(/<script[\\s\\S]*?<\\/script>/gi, "");
+      const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="{cssWidth}" height="{cssHeight}" viewBox="0 0 {cssWidth} {cssHeight}">
+  <foreignObject width="100%" height="100%">
+    <div xmlns="http://www.w3.org/1999/xhtml" style="width:{cssWidth}px;height:{cssHeight}px;background:transparent;">
+      {cleanHTML}
+    </div>
+  </foreignObject>
+</svg>`.replaceAll("{{","{").replaceAll("}}","}").replace("{cssWidth}", cssWidth).replace("{cssHeight}", cssHeight).replace("{cleanHTML}", cleanHTML);
+
       const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-      const filename = `timeline_${{start.toISOString().slice(0,10)}}_to_${{end.toISOString().slice(0,10)}}_${{ts}}.svg`;
-      const blob = new Blob([svgText], {{ type: 'image/svg+xml' }});
+      const filename = `timeline_${{start.toISOString().slice(0,10)}}_to_${{
+        end.toISOString().slice(0,10)}}_${{ts}}.svg`;
+
+      const blob = new Blob([svg], {{ type: 'image/svg+xml' }});
       const url  = URL.createObjectURL(blob);
 
       const box  = document.getElementById('dlbox');
@@ -294,14 +309,11 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       btnX.onclick = () => {{ box.style.display = 'none'; URL.revokeObjectURL(url); }};
       link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 0);
 
-      // On desktop (non-iOS) auto-click; iOS requires a tap within the iframe
       const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-      if (!isiOS) {{
-        setTimeout(() => link.click(), 80);
-      }}
+      if (!isiOS) {{ setTimeout(() => link.click(), 90); }}
 
       exTl.destroy(); wrap.remove();
-    }})();
+    }}
   </script>
 </body>
 </html>
