@@ -1,4 +1,4 @@
-# lib/timeline.py — robust render + SVG export with *always-visible* in-frame Download pill (iPad-safe)
+# lib/timeline.py — robust render + SVG export with in-frame Download pill (iPad-safe)
 
 import json
 from datetime import date, datetime, timedelta
@@ -82,7 +82,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     .vis-item .vis-item-content {{ line-height:1.15 }}
     .ttl {{ font-weight:600 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
-    /* Download pill (forced visible via inline styles at runtime) */
     #dlbox {{
       display:none; position:absolute; right:12px; bottom:12px; z-index:100000;
       background:#fff; border:1px solid #e5e7eb; border-radius:10px;
@@ -106,7 +105,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
   </div>
 
   <script>
-    // Shared data
     window.__TL_DATA__ = {{
       ITEMS: {items_json},
       GROUPS: {groups_json},
@@ -117,7 +115,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       JS_URLS: {json.dumps(_VIS_JS_URLS)}
     }};
 
-    // ------- helpers --------
     function loadCssSeq(urls) {{
       return new Promise((resolve) => {{
         let i=0, done=false;
@@ -156,10 +153,9 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
     }}
     const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
-    // ------- render timeline -------
     (async function boot() {{
       const D = window.__TL_DATA__;
-      await loadCssSeq(D.CSS_URLS).catch(()=>{});
+      await loadCssSeq(D.CSS_URLS).catch(()=>{{}});
       await loadScriptSeq(D.JS_URLS);
 
       const el = document.getElementById('timeline');
@@ -184,24 +180,19 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         window.__TL__ = new vis.Timeline(el, new vis.DataSet(items), options);
       }}
 
-      // If an export request is present, run it now
       const EX = D.EXPORT;
       if (EX && Object.keys(EX).length) {{
         await new Promise(r => requestAnimationFrame(() => setTimeout(r, 140)));
         generateSVG(EX);
       }}
     }})();
-  </script>
 
-  <!-- ------- SVG export (no modules), always shows a pill in-frame ------- -->
-  <script>
     async function fetchCssText(urls) {{
       for (const u of urls) {{
         try {{
           const res = await fetch(u, {{ mode:'cors' }});
           if (res.ok) return await res.text();
         }} catch(_){{
-          /* try next */
         }}
       }}
       return "";
@@ -212,7 +203,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const ITEMS  = D.ITEMS || [];
       const GROUPS = D.GROUPS || [];
 
-      // Calculate span
       const toDate = v => new Date(typeof v === 'string' ? v : v);
       let smin=null, emax=null;
       for (const it of ITEMS) {{
@@ -229,7 +219,6 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const start = monthAdd(new Date(Date.UTC(smin.getUTCFullYear(), smin.getUTCMonth(), 1)), -pad);
       const end   = monthAdd(new Date(Date.UTC(emax.getUTCFullYear(), emax.getUTCMonth(), 1)), pad + 1);
 
-      // Offscreen TL sized for export
       const pxPerInch = 96;
       const cssWidth  = Math.max(800, Math.round((Number(EXPORT.widthInches || 24)) * pxPerInch));
       const rows      = Math.max(1, GROUPS.length);
@@ -271,13 +260,13 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
         const st = document.createElement('style'); st.textContent = visCss; node.prepend(st);
       }}
 
-      // Build SVG via foreignObject (transparent)
+      // NOTE: the doubled braces here are intentional to satisfy Python f-string parsing.
       const cleanHTML = node.outerHTML.replace(/<script[\\s\\S]*?<\\/script>/gi, "");
       const svg = `
-<svg xmlns="http://www.w3.org/2000/svg" width="{cssWidth}" height="{cssHeight}" viewBox="0 0 {cssWidth} {cssHeight}">
+<svg xmlns="http://www.w3.org/2000/svg" width="{{cssWidth}}" height="{{cssHeight}}" viewBox="0 0 {{cssWidth}} {{cssHeight}}">
   <foreignObject width="100%" height="100%">
-    <div xmlns="http://www.w3.org/1999/xhtml" style="width:{cssWidth}px;height:{cssHeight}px;background:transparent;">
-      {cleanHTML}
+    <div xmlns="http://www.w3.org/1999/xhtml" style="width:{{cssWidth}}px;height:{{cssHeight}}px;background:transparent;">
+      {{cleanHTML}}
     </div>
   </foreignObject>
 </svg>`
@@ -289,14 +278,11 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       const blob = new Blob([svg], {{ type: 'image/svg+xml' }});
       const url  = URL.createObjectURL(blob);
 
-      // Force-visible download pill (bottom-right inside timeline)
       const box  = document.getElementById('dlbox');
       const link = document.getElementById('svg_link');
       const btnX = document.getElementById('close_dl');
 
       link.href = url; link.download = filename; link.textContent = "Download SVG";
-
-      // Inline styles too (in case stylesheet didn’t apply)
       box.style.cssText = "display:block;position:absolute;right:12px;bottom:12px;z-index:100000;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 6px 18px rgba(16,24,40,.12);padding:10px 12px;font-size:12px;";
       link.style.cssText = "display:inline-flex;align-items:center;justify-content:center;padding:9px 12px;border-radius:8px;border:1px solid #cbd5e1;text-decoration:none;font-weight:700;color:#0f172a;";
       btnX.style.cssText = "margin-left:10px;padding:6px 8px;border-radius:8px;border:1px solid #e5e7eb;background:#f8fafc;color:#334155;cursor:pointer;";
@@ -304,12 +290,8 @@ def render_timeline(items, groups, selected_id: str = "", export: dict | None = 
       btnX.onclick = () => {{ box.style.display='none'; URL.revokeObjectURL(url); }};
       link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 0);
 
-      // On iOS, programmatic click is blocked; show an alert to guide the tap.
       const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-      if (isiOS) {{
-        alert("SVG ready. Tap the 'Download SVG' button in the timeline frame.");
-      }} else {{
-        // Desktop convenience
+      if (!isiOS) {{
         setTimeout(() => link.click(), 90);
       }}
 
