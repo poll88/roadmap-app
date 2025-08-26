@@ -1,4 +1,4 @@
-# app.py — SVG-only export (exact style, transparent), stacked sliders, import loop fix
+# app.py — PNG export (exact style, transparent @300 ppi), stacked sliders, import loop fix
 
 import uuid
 import hashlib
@@ -41,8 +41,9 @@ except TypeError:
 # ---------- Pastel palette ----------
 PALETTE = [
     ("Lavender",  "#E9D5FF"), ("Baby Blue", "#BFDBFE"), ("Mint", "#BBF7D0"),
-    ("Lemon", "#FEF9C3"), ("Peach", "#FDE1D3"), ("Blush", "#FBCFE8"),
-    ("Sky", "#E0F2FE"), ("Mauve", "#F5D0FE"), ("Sage", "#D1FAE5"), ("Sand", "#F5E7C6"),
+    ("Lemon",     "#FEF9C3"), ("Peach",     "#FDE1D3"), ("Blush", "#FBCFE8"),
+    ("Sky",       "#E0F2FE"), ("Mauve",     "#F5D0FE"), ("Sage",  "#D1FAE5"),
+    ("Sand",      "#F5E7C6"),
 ]
 PALETTE_MAP = {f"{n} ({h})": h for n, h in PALETTE}
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
@@ -223,24 +224,23 @@ with st.sidebar:
     exported = export_items_groups(st.session_state)
     st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
 
-    # ---- Exact Style Export (SVG, transparent) ----
-    st.subheader("🎨 Export SVG (exact style, transparent)")
+    # ---- Exact Style Export (PNG, transparent @300 ppi) ----
+    st.subheader("🎨 Export PNG (exact style, transparent)")
     gran = st.selectbox("Granularity", ["Auto", "Month", "Quarter"], index=1, key="export_gran")
     pad_months = st.slider("Padding (months)", 0, 12, 1, key="export_pad_mo")          # slider #1
     width_in   = st.slider("Width (inches for export)", 10, 60, 24, key="export_w_in")  # slider #2
 
-    if st.button("Generate SVG", use_container_width=True):
-        # Remember current filter to export the same subset
+    if st.button("Generate PNG", use_container_width=True):
         sel_names = st.session_state.get("filter_categories", [])
         st.session_state["_export_exact"] = {
-            "kind": "svg",                   # SVG only
-            "granularity": gran.lower(),     # 'auto' | 'month' | 'quarter'
+            "kind": "png",                 # PNG export (handled in lib/timeline.py)
+            "granularity": gran.lower(),   # 'auto' | 'month' | 'quarter'
             "padMonths": int(pad_months),
             "widthInches": float(width_in),
-            "ppi": 300,                      # kept for completeness, unused by SVG
+            "ppi": 300,                    # used to compute widthPx (widthInches * 300)
             "filterNames": sel_names,
         }
-        st.toast("Preparing SVG…", icon="🖼️")
+        st.toast("Preparing PNG…", icon="🖼️")
         st.rerun()
 
     # --- Import JSON (loop-safe) ---
@@ -264,16 +264,28 @@ with st.sidebar:
 st.title("Roadmap Timeline")
 
 if not st.session_state["items"]:
-    st.markdown('<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>',
+        unsafe_allow_html=True
+    )
 else:
     # Filter (exposed via key so sidebar export can reuse)
-    names = st.multiselect("Filter categories", [g["content"] for g in st.session_state["groups"]], key="filter_categories")
+    names = st.multiselect(
+        "Filter categories",
+        [g["content"] for g in st.session_state["groups"]],
+        key="filter_categories"
+    )
     ids = {g["id"] for g in st.session_state["groups"] if g["content"] in names} if names else set()
     items_view  = [i for i in st.session_state["items"]  if not ids or i.get("group", "") in ids]
     groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
 
     # One-shot export request (consumed by timeline)
     export_req = st.session_state.get("_export_exact")
-    render_timeline(items_view, groups_view, selected_id=st.session_state.get("editing_item_id", ""), export=export_req)
+    render_timeline(
+        items_view,
+        groups_view,
+        selected_id=st.session_state.get("editing_item_id", ""),
+        export=export_req
+    )
     if export_req is not None:
         st.session_state["_export_exact"] = None
