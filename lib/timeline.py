@@ -1,4 +1,5 @@
-# lib/timeline.py — vis render + one-to-one PNG export of visible timeline (no preview pill)
+# lib/timeline.py — vis render + one-to-one PNG export (no preview), Montserrat font,
+# and robust handling of items without a group (show in ungrouped lane).
 
 import json
 from datetime import date, datetime, timedelta
@@ -32,6 +33,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             "content": i.get("content"),
             "start": _dt(i.get("start")),
             "end": _dt(i.get("end")),
+            # keep group value; JS will strip it if empty/falsy
             "group": i.get("group"),
             "style": i.get("style"),
             "subtitle": i.get("subtitle", ""),
@@ -61,9 +63,11 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 <html>
   <head>
     <meta charset="utf-8"/>
+    <!-- Montserrat font -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
     :root {{
-      --font: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, "Noto Sans", "Helvetica Neue", sans-serif;
+      --font: 'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, "Noto Sans", "Helvetica Neue", sans-serif;
     }}
     html, body {{ background: transparent; margin:0; padding:0; }}
     body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis {{ font-family: var(--font); }}
@@ -73,10 +77,10 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       border-radius:12px; border:1px solid #e7e9f2;
     }}
     .row-bg {{ background: rgba(37,99,235,.05) }}
-    .vis-time-axis .text {{ font-size:12px; font-weight:500 }}
-    .vis-labelset .vis-label .vis-inner {{ font-weight:600 }}
+    .vis-time-axis .text {{ font-size:12px; font-weight:600 }}
+    .vis-labelset .vis-label .vis-inner {{ font-weight:700 }}
     .vis-item .vis-item-content {{ line-height:1.15 }}
-    .ttl {{ font-weight:600 }}
+    .ttl {{ font-weight:700 }}
     .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
     </style>
   </head>
@@ -125,15 +129,23 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         const el = document.getElementById('timeline');
         if (!el || !window.vis) return;
 
-        const items = new vis.DataSet((D.ITEMS || []).map(it => ({{
-          id: it.id,
-          content: `<div class="ttl">${{it.content||''}}</div><div class="sub">${{it.subtitle||''}}</div>`,
-          start: it.start, end: it.end, group: it.group, style: it.style
-        }})));
+        const items = new vis.DataSet((D.ITEMS || []).map(it => {{
+          // Build content
+          const obj = {{
+            id: it.id,
+            content: `<div class="ttl">${{it.content||''}}</div><div class="sub">${{it.subtitle||''}}</div>`,
+            start: it.start, end: it.end, style: it.style
+          }};
+          // IMPORTANT: if group is empty/null/undefined, don't set it at all -> ungrouped lane
+          if (it.group) obj.group = it.group;
+          return obj;
+        }}));
 
-        const groups = new vis.DataSet((D.GROUPS || []).map(g => ({{
+        // If there are no groups, don't pass a groups dataset (ungrouped mode)
+        const hasGroups = Array.isArray(D.GROUPS) && D.GROUPS.length > 0;
+        const groups = hasGroups ? new vis.DataSet((D.GROUPS || []).map(g => ({{
           id: g.id, content: g.content
-        }})));
+        }}))) : null;
 
         const options = {{
           stack: false,
@@ -152,10 +164,12 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           margin: {{ item: 8, axis: 12 }},
         }};
 
-        const tl = new vis.Timeline(el, items, groups, options);
+        const tl = hasGroups
+          ? new vis.Timeline(el, items, groups, options)
+          : new vis.Timeline(el, items, options);
         window._tl = tl;
 
-        // Ensure the viewport shows your items (this was the missing line).
+        // Ensure the viewport shows your items.
         try {{ if ((D.ITEMS || []).length) tl.fit(); }} catch (e) {{}}
       }}
 
