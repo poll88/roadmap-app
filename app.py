@@ -1,5 +1,5 @@
-# app.py — robust JSON import (auto-detect schema), working Save (updates selection),
-# add multiple items, unified Category input, PNG bg toggle, and a small Debug expander.
+# app.py — fixes Save by only pre-filling when selection changes,
+# robust import, unified Category, multi-item add, PNG bg toggle, Debug expander
 
 import uuid
 import hashlib
@@ -28,7 +28,8 @@ ss.setdefault("groups", [])
 ss.setdefault("_last_import_hash", "")
 ss.setdefault("_export_exact", None)
 ss.setdefault("png_include_bg", True)
-ss.setdefault("selected_item_id", "(none)")  # bound to the picker
+ss.setdefault("selected_item_id", "(none)")   # bound to the picker
+ss.setdefault("_last_prefill_from", "(none)") # <-- NEW: only prefill when selection changes
 
 # ---------- Colors ----------
 PALETTE_MAP = {
@@ -54,9 +55,9 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
     ss["form_title"] = it.get("content", "")
     ss["form_subtitle"] = it.get("subtitle", "")
     ss["form_category_name"] = groups_by_id.get(it.get("group", ""), "")
-    # tolerate strings/datetimes
     ss["form_start"] = _date_from_any(it.get("start")) or date.today()
     ss["form_end"]   = _date_from_any(it.get("end"))   or ss["form_start"]
+    # color label from hex if it matches our palette
     cur_color = it.get("color")
     for label, hexv in PALETTE_MAP.items():
         if hexv == cur_color:
@@ -92,16 +93,12 @@ def _date_from_any(v):
         return v.date()
     if isinstance(v, str):
         s = v.strip()
-        # common cleanups
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         try:
-            # ISO with time or date-only
-            dt = datetime.fromisoformat(s)
-            return dt.date()
+            return datetime.fromisoformat(s).date()
         except Exception:
             pass
-        # try date-only simple formats
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y"):
             try:
                 return datetime.strptime(s, fmt).date()
@@ -110,7 +107,6 @@ def _date_from_any(v):
     return None
 
 def _pick_color_hex(label_hint: str = "") -> str:
-    """Consistent color choice for imported items when no color provided."""
     if not label_hint:
         return PALETTE_MAP["Blue"]
     keys = list(PALETTE_MAP.values())
@@ -130,25 +126,13 @@ def _build_item_dict(item_id: str) -> dict:
         "subtitle": ss["form_subtitle"],
         "start": start,
         "end":   end,
-        "group": gid,  # empty => Ungrouped lane (renderer handles it)
+        "group": gid,
         "color": col_hex,
         "style": f"background:{col_hex}; border-color:{col_hex}",
     })
 
 # ---------- Smart JSON importer ----------
 def smart_import(text: str):
-    """
-    Accepts many shapes:
-      {items:[...], groups:[...]}
-      {data:{items:[...], groups:[...]}}
-      {Items:[...], Groups:[...]} (case variants)
-      Or just {items:[...]} (we will synthesize groups from item.category/name)
-    Items fields we recognize:
-      id, content/title/name, subtitle/description,
-      start/startDate, end/endDate,
-      group (id), groupId, category/groupName (string),
-      color
-    """
     doc = json.loads(text)
 
     def _get_case_insensitive(d: dict, key: str):
@@ -158,7 +142,6 @@ def smart_import(text: str):
         return None
 
     root = doc
-    # Allow nested {data:{...}}
     if isinstance(root, dict) and "data" in {k.lower() for k in root.keys()}:
         cand = _get_case_insensitive(root, "data")
         if isinstance(cand, dict):
@@ -168,14 +151,12 @@ def smart_import(text: str):
     groups_in = _get_case_insensitive(root, "groups")
 
     if items_in is None and isinstance(root, dict):
-        # Look one more level deep for common wrappers
         for v in root.values():
             if isinstance(v, dict):
                 items_in  = items_in  or _get_case_insensitive(v, "items")
                 groups_in = groups_in or _get_case_insensitive(v, "groups")
 
     if items_in is None:
-        # Try a loose guess: any list of dicts that looks like items
         for v in root.values() if isinstance(root, dict) else []:
             if isinstance(v, list) and v and isinstance(v[0], dict):
                 sample = v[0]
@@ -184,13 +165,12 @@ def smart_import(text: str):
                     break
 
     if not isinstance(items_in, list):
-        return [], []  # nothing recognizable
+        return [], []
 
     groups_norm = []
     items_norm  = []
-
-    # Build a groups map from provided groups (if any)
     name_to_id = {}
+
     if isinstance(groups_in, list):
         for idx, g in enumerate(groups_in):
             gid = str(g.get("id") or uuid.uuid4())
@@ -217,28 +197,19 @@ def smart_import(text: str):
         iid = str(it.get("id") or uuid.uuid4())
         title = it.get("content") or it.get("title") or it.get("name") or "(untitled)"
         subtitle = it.get("subtitle") or it.get("description") or ""
-
-        # Resolve group
         group_id = it.get("group") or it.get("groupId")
         if not group_id:
-            # maybe string category/groupName
             gname = it.get("category") or it.get("groupName") or it.get("group_name")
             group_id = _ensure_group_from_item_name(gname) if gname else ""
-
-        # Dates
         start = _date_from_any(it.get("start") or it.get("startDate"))
         end   = _date_from_any(it.get("end")   or it.get("endDate")) or start
         if not start:
-            # If no start at all, skip this item (cannot render)
             continue
         if end and end < start:
             start, end = end, start
-
-        # Color
         color = it.get("color")
         if not color or not isinstance(color, str) or not color.startswith("#"):
             color = _pick_color_hex(title + subtitle)
-
         items_norm.append(normalize_item({
             "id": iid,
             "content": title,
@@ -249,7 +220,6 @@ def smart_import(text: str):
             "color": color,
             "style": f"background:{color}; border-color:{color}",
         }))
-
     return items_norm, groups_norm
 
 # ---------- Page ----------
@@ -268,17 +238,17 @@ with st.sidebar:
             imported_items, imported_groups = smart_import(text)
             if imported_items:
                 ss["items"]  = imported_items
-                # If file didn't include groups, we may have synthesized them above
                 ss["groups"] = imported_groups
                 ss["selected_item_id"] = "(none)"
+                ss["_last_prefill_from"] = "(none)"   # reset prefill marker
                 st.success(f"Imported {len(imported_items)} items, {len(imported_groups)} groups.")
                 st.rerun()
             else:
-                # Try legacy project normalizer as a fallback
                 try:
                     normalize_state(ss, text)
-                    st.success("Imported using legacy normalizer.")
                     ss["selected_item_id"] = "(none)"
+                    ss["_last_prefill_from"] = "(none)"
+                    st.success("Imported using legacy normalizer.")
                     st.rerun()
                 except Exception:
                     st.error("Import failed or empty. Expect JSON with an 'items' array (and optionally 'groups').")
@@ -292,6 +262,7 @@ with st.sidebar:
         reset_defaults(ss)
         ss["png_include_bg"] = keep_bg
         ss["selected_item_id"] = "(none)"
+        ss["_last_prefill_from"] = "(none)"
         st.rerun()
 
 # Lookups and form defaults
@@ -311,9 +282,11 @@ selected_id = st.selectbox(
     format_func=lambda v: "(none)" if v == "(none)" else _label_for_item(item_by_id[v], groups_by_id),
 )
 
-# Prefill form for selection
-if selected_id != "(none)":
-    _prefill_form_from_item(item_by_id[selected_id], groups_by_id)
+# ✅ Only prefill when the selection actually changes
+if selected_id != ss.get("_last_prefill_from"):
+    if selected_id != "(none)":
+        _prefill_form_from_item(item_by_id[selected_id], groups_by_id)
+    ss["_last_prefill_from"] = selected_id
 
 # ---- Form (tab order: Title → Subtitle → Category → Start → End → Color) ----
 with st.form("item_form", clear_on_submit=False):
@@ -348,11 +321,10 @@ if btn_add:
         st.warning("Title is required.")
     else:
         new_id = str(uuid.uuid4())
-        # Build and append
-        item = _build_item_dict(new_id)
-        ss["items"].append(item)
-        # Auto-select new item so Save applies to it
+        ss["items"].append(_build_item_dict(new_id))
+        # Auto-select new item and set prefill marker to that id
         ss["selected_item_id"] = new_id
+        ss["_last_prefill_from"] = new_id
         st.success("Item added.")
         st.rerun()
 
@@ -362,10 +334,11 @@ if btn_save:
         st.warning("Title is required.")
     else:
         if ss["selected_item_id"] == "(none)":
-            # Treat Save as create when nothing selected
+            # Save behaves like create when nothing selected
             new_id = str(uuid.uuid4())
             ss["items"].append(_build_item_dict(new_id))
             ss["selected_item_id"] = new_id
+            ss["_last_prefill_from"] = new_id
             st.success("Item saved (new).")
             st.rerun()
         else:
@@ -377,11 +350,12 @@ if btn_save:
                     updated = True
                     break
             if updated:
+                # Keep selection; do NOT prefill on next run (so user edits persist)
                 st.success("Item updated.")
                 st.rerun()
             else:
-                # If somehow missing, create it using the target id
                 ss["items"].append(_build_item_dict(target))
+                ss["_last_prefill_from"] = target
                 st.info("Selected item not found; created it.")
                 st.rerun()
 
@@ -392,6 +366,7 @@ if btn_del:
         tgt = ss["selected_item_id"]
         ss["items"] = [it for it in ss["items"] if str(it.get("id")) != tgt]
         ss["selected_item_id"] = "(none)"
+        ss["_last_prefill_from"] = "(none)"
         st.success("Item deleted.")
         st.rerun()
 
@@ -420,12 +395,13 @@ render_timeline(items_view, groups_view, selected_id=ss.get("selected_item_id", 
 if export_req is not None:
     ss["_export_exact"] = None
 
-# ---- Debug (you asked to use debug to see where we’re stuck) ----
+# ---- Debug ----
 with st.expander("Debug"):
     st.write({
         "items_count": len(ss["items"]),
         "groups_count": len(ss["groups"]),
         "selected_item_id": ss.get("selected_item_id"),
+        "_last_prefill_from": ss.get("_last_prefill_from"),
         "first_item": ss["items"][0] if ss["items"] else None,
         "first_group": ss["groups"][0] if ss["groups"] else None,
     })
