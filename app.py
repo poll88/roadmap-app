@@ -1,4 +1,4 @@
-# app.py — PNG export (exact style, transparent @300 ppi), stacked sliders, import loop fix
+# app.py — PNG export (exact on-screen view), stacked sliders removed
 
 import uuid
 import hashlib
@@ -28,34 +28,19 @@ st.session_state.setdefault("_last_picker_id", "")
 st.session_state.setdefault("_export_exact", None)
 st.session_state.setdefault("_last_import_hash", "")
 
-# Accept both normalize_state signatures
-try:
-    res = normalize_state(st.session_state)
-    if isinstance(res, tuple):
-        st.session_state["items"], st.session_state["groups"] = res
-except TypeError:
-    res = normalize_state(st.session_state.get("items"), st.session_state.get("groups"))
-    if isinstance(res, tuple):
-        st.session_state["items"], st.session_state["groups"] = res
-
-# ---------- Pastel palette ----------
-PALETTE = [
-    ("Lavender",  "#E9D5FF"), ("Baby Blue", "#BFDBFE"), ("Mint", "#BBF7D0"),
-    ("Lemon",     "#FEF9C3"), ("Peach",     "#FDE1D3"), ("Blush", "#FBCFE8"),
-    ("Sky",       "#E0F2FE"), ("Mauve",     "#F5D0FE"), ("Sage",  "#D1FAE5"),
-    ("Sand",      "#F5E7C6"),
-]
-PALETTE_MAP = {f"{n} ({h})": h for n, h in PALETTE}
+# ----------------- Color palette -----------------
+PALETTE_MAP = {
+    "Blue":   "#3B82F6",
+    "Green":  "#10B981",
+    "Amber":  "#F59E0B",
+    "Rose":   "#F43F5E",
+    "Purple": "#8B5CF6",
+    "Slate":  "#64748B",
+}
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
 
-# ---------- Helpers ----------
-def _find_item(iid: str):
-    for it in st.session_state["items"]:
-        if str(it.get("id")) == str(iid):
-            return it
-    return None
-
-def _ensure_form_defaults():
+# ----------------- Helpers -----------------
+def normalize_defaults():
     st.session_state.setdefault("form_title", "")
     st.session_state.setdefault("form_subtitle", "")
     st.session_state.setdefault("form_start", date.today())
@@ -89,88 +74,99 @@ def _resolve_group_id_from_text(category_text: str) -> str:
     if not name:
         return ""
     for g in st.session_state["groups"]:
-        if g["content"].lower() == name.lower():
-            return g["id"]
-    g = normalize_group({"content": name, "order": len(st.session_state["groups"])})
-    st.session_state["groups"].append(g)
-    LOG.info("Created new category name=%r id=%s", name, g["id"])
-    return g["id"]
+        if (g.get("content") or "").strip().lower() == name.lower():
+            return g.get("id", "")
+    # create new group
+    gid = str(uuid.uuid4())
+    st.session_state["groups"].append(normalize_group({
+        "id": gid,
+        "content": name,
+        "order": len(st.session_state["groups"]),
+    }))
+    return gid
 
-def _suggest_categories(query: str, k=5):
-    q = (query or "").strip().lower()
-    if not q:
-        return []
-    return [g["content"] for g in st.session_state["groups"] if q in g["content"].lower()][:k]
+# ----------------- Page -----------------
+st.title("🗺️ Product Roadmap")
 
-# ----------------- SIDEBAR -----------------
+# Sidebar: load / save
 with st.sidebar:
-    st.header("📅 Add / Edit")
+    st.header("Data")
+    uploaded = st.file_uploader("Import JSON", type=["json"])
+    if uploaded is not None:
+        data_bytes = uploaded.read()
+        h = hashlib.sha256(data_bytes).hexdigest()
+        if h != st.session_state.get("_last_import_hash", ""):
+            st.session_state["_last_import_hash"] = h
+            normalize_state(st.session_state, data_bytes.decode("utf-8"))
+            st.success("Imported!"); st.rerun()
 
-    groups_by_id = {g["id"]: g["content"] for g in st.session_state["groups"]}
-    item_labels = [_label_for_item(it, groups_by_id)
-                   for it in st.session_state["items"]
-                   if it.get("type") != "background"]
-    item_ids = [it["id"] for it in st.session_state["items"] if it.get("type") != "background"]
+    exported = export_items_groups(st.session_state)
+    st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
 
-    PICK_NEW = "➕ New item"
-    picker_options = [PICK_NEW] + item_labels
+    st.divider()
+    if st.button("Reset (clear all)", type="secondary"):
+        LOG.info("RESET")
+        reset_defaults(st.session_state); st.rerun()
 
-    if st.session_state.get("editing_item_id") and st.session_state["editing_item_id"] in item_ids:
-        default_idx = item_ids.index(st.session_state["editing_item_id"]) + 1
+# Build lookups
+groups_by_id = {g.get("id"): g.get("content", "") for g in st.session_state["groups"]}
+normalize_defaults()
+
+# ---- Item picker ----
+st.subheader("✏️ Edit / Add")
+picker_items = [
+    {"label": _label_for_item(it, groups_by_id), "value": str(it.get("id", ""))}
+    for it in st.session_state["items"]
+]
+picker_labels = [p["label"] for p in picker_items]
+picker_values = [p["value"] for p in picker_items]
+selected_label = st.selectbox("Select item to edit", ["(none)"] + picker_labels)
+selected_value = ""
+if selected_label != "(none)":
+    idx = picker_labels.index(selected_label)
+    selected_value = picker_values[idx]
+st.session_state["editing_item_id"] = selected_value
+
+# Prefill
+if selected_value:
+    for it in st.session_state["items"]:
+        if str(it.get("id")) == selected_value:
+            _prefill_form_from_item(it, groups_by_id)
+            break
+
+# Form
+with st.form("item_form", clear_on_submit=False):
+    c1, c2 = st.columns([2, 2])
+    with c1:
+        st.text_input("Title", key="form_title")
+        st.selectbox("Category", [g["content"] for g in st.session_state["groups"]] + ["(new…)"], key="form_category")
+        st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
+    with c2:
+        st.text_input("Subtitle (optional)", key="form_subtitle")
+        st.date_input("Start", key="form_start")
+        st.date_input("End", key="form_end")
+
+    add_clicked, edit_clicked, delete_clicked = st.columns(3)
+    with add_clicked:
+        add_clicked = st.form_submit_button("Add new")
+    with edit_clicked:
+        edit_clicked = st.form_submit_button("Save changes")
+    with delete_clicked:
+        delete_clicked = st.form_submit_button("Delete")
+
+if add_clicked:
+    title = (st.session_state["form_title"] or "").strip()
+    if not title:
+        st.warning("Title is required.")
     else:
-        default_idx = 0
-
-    pick = st.selectbox("Item", picker_options, index=default_idx, key="picker_label")
-
-    # Selection change handling
-    if pick == PICK_NEW:
-        if st.session_state.get("_last_picker_id"):
-            LOG.info("Picker -> NEW (was %s)", st.session_state["_last_picker_id"])
-            st.session_state["editing_item_id"] = ""
-            st.session_state["_last_picker_id"] = ""
-            _ensure_form_defaults()
-    else:
-        sel_idx = picker_options.index(pick) - 1
-        sel_id = item_ids[sel_idx]
-        if str(sel_id) != str(st.session_state.get("_last_picker_id", "")):
-            LOG.info("Picker selection changed: %s -> %s", st.session_state.get("_last_picker_id", ""), sel_id)
-            st.session_state["editing_item_id"] = str(sel_id)
-            st.session_state["_last_picker_id"] = str(sel_id)
-            _ensure_form_defaults()
-            _prefill_form_from_item(_find_item(sel_id), groups_by_id)
-
-    # ---- form with single category box ----
-    _ensure_form_defaults()
-    with st.form("item_form", clear_on_submit=False):
-        colA, colB = st.columns(2)
-        start = colA.date_input("Start", key="form_start")
-        end   = colB.date_input("End",   key="form_end")
-        start, end = ensure_range(start, end)
-
-        st.text_input("Title", key="form_title", placeholder="Item title")
-        st.text_input("Subtitle (optional)", key="form_subtitle", placeholder="Short note")
-
-        st.text_input("Category", key="form_category", placeholder="Type to select or create")
-        sugg = _suggest_categories(st.session_state.get("form_category", ""), k=5)
-        if sugg:
-            st.caption("Suggestions: " + " · ".join(sugg))
-
-        st.selectbox("Bar color", PALETTE_OPTIONS, key="form_color_label")
-
-        add_clicked    = st.form_submit_button("➕ Add item",    use_container_width=True)
-        edit_clicked   = st.form_submit_button("✏️ Edit item",   use_container_width=True)
-        delete_clicked = st.form_submit_button("🗑 Delete item", use_container_width=True)
-
-    # ------ Actions ------
-    if add_clicked:
         col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
         gid = _resolve_group_id_from_text(st.session_state.get("form_category", ""))
         item = normalize_item({
             "id": str(uuid.uuid4()),
-            "content": st.session_state["form_title"],
+            "content": title,
             "subtitle": st.session_state["form_subtitle"],
             "start": st.session_state["form_start"],
-            "end":   st.session_state["form_end"],
+            "end": st.session_state["form_end"],
             "group": gid,
             "color": col_hex,
             "style": f"background:{col_hex}; border-color:{col_hex}",
@@ -181,111 +177,68 @@ with st.sidebar:
         st.session_state["_last_picker_id"] = ""
         st.success("Item added."); st.rerun()
 
-    if edit_clicked:
-        eid = st.session_state.get("editing_item_id", "")
-        if not eid:
-            st.warning("Select an item to edit (top dropdown).")
-        else:
-            col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
-            gid = _resolve_group_id_from_text(st.session_state.get("form_category", ""))
-            for i, it in enumerate(st.session_state["items"]):
-                if str(it.get("id")) == str(eid):
-                    st.session_state["items"][i] = normalize_item({
-                        "id": eid,
-                        "content": st.session_state["form_title"],
-                        "subtitle": st.session_state["form_subtitle"],
-                        "start": st.session_state["form_start"],
-                        "end":   st.session_state["form_end"],
-                        "group": gid if gid != "" else it.get("group", ""),
-                        "color": col_hex,
-                        "style": f"background:{col_hex}; border-color:{col_hex}",
-                    })
-                    LOG.info("EDIT id=%s", eid)
-                    break
-            st.success("Item updated."); st.rerun()
+if edit_clicked:
+    eid = st.session_state.get("editing_item_id", "")
+    if not eid:
+        st.warning("Select an item to edit (top dropdown).")
+    else:
+        col_hex = PALETTE_MAP[st.session_state["form_color_label"]]
+        gid = _resolve_group_id_from_text(st.session_state.get("form_category", ""))
+        for i, it in enumerate(st.session_state["items"]):
+            if str(it.get("id")) == str(eid):
+                st.session_state["items"][i] = normalize_item({
+                    "id": eid,
+                    "content": st.session_state["form_title"],
+                    "subtitle": st.session_state["form_subtitle"],
+                    "start": st.session_state["form_start"],
+                    "end":   st.session_state["form_end"],
+                    "group": gid if gid != "" else it.get("group", ""),
+                    "color": col_hex,
+                    "style": f"background:{col_hex}; border-color:{col_hex}",
+                })
+                LOG.info("EDIT id=%s", eid)
+                break
+        st.success("Item updated."); st.rerun()
 
-    if delete_clicked:
-        eid = st.session_state.get("editing_item_id", "")
-        if not eid:
-            st.warning("Select an item to delete (top dropdown).")
-        else:
-            LOG.info("DELETE id=%s", eid)
-            st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
-            st.session_state["editing_item_id"] = ""
-            st.session_state["_last_picker_id"] = ""
-            st.success("Item deleted."); st.rerun()
+if delete_clicked:
+    eid = st.session_state.get("editing_item_id", "")
+    if not eid:
+        st.warning("Select an item to delete (top dropdown).")
+    else:
+        st.session_state["items"] = [it for it in st.session_state["items"] if str(it.get("id")) != str(eid)]
+        st.session_state["editing_item_id"] = ""
+        st.session_state["_last_picker_id"] = ""
+        st.success("Item deleted."); st.rerun()
 
-    st.divider()
-    st.subheader("🧰 Utilities")
-    if st.button("Reset (clear all)", type="secondary"):
-        LOG.info("RESET")
-        reset_defaults(st.session_state); st.rerun()
+st.divider()
 
-    exported = export_items_groups(st.session_state)
-    st.download_button("⬇️ Export JSON", data=exported, file_name="roadmap.json", mime="application/json")
+# ---- Export PNG: simple one-to-one of visible timeline ----
+st.subheader("🎨 Export PNG")
+if st.button("Download PNG", use_container_width=True):
+    st.session_state["_export_exact"] = {
+        "kind": "png",  # handled in lib/timeline.py
+        "mode": "visible",  # export exactly what's on screen
+    }
+    st.toast("Exporting PNG…", icon="🖼️")
 
-    # ---- Exact Style Export (PNG, transparent @300 ppi) ----
-    st.subheader("🎨 Export PNG (exact style, transparent)")
-    gran = st.selectbox("Granularity", ["Auto", "Month", "Quarter"], index=1, key="export_gran")
-    pad_months = st.slider("Padding (months)", 0, 12, 1, key="export_pad_mo")          # slider #1
-    width_in   = st.slider("Width (inches for export)", 10, 60, 24, key="export_w_in")  # slider #2
+# ---- Filters & Timeline render ----
+st.subheader("📂 View options")
+names = st.multiselect(
+    "Filter categories",
+    [g["content"] for g in st.session_state["groups"]],
+    key="filter_categories"
+)
+ids = {g["id"] for g in st.session_state["groups"] if g["content"] in names} if names else set()
+items_view  = [i for i in st.session_state["items"]  if not ids or i.get("group", "") in ids]
+groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
 
-    if st.button("Generate PNG", use_container_width=True):
-        sel_names = st.session_state.get("filter_categories", [])
-        st.session_state["_export_exact"] = {
-            "kind": "png",                 # PNG export (handled in lib/timeline.py)
-            "granularity": gran.lower(),   # 'auto' | 'month' | 'quarter'
-            "padMonths": int(pad_months),
-            "widthInches": float(width_in),
-            "ppi": 300,                    # used to compute widthPx (widthInches * 300)
-            "filterNames": sel_names,
-        }
-        st.toast("Preparing PNG…", icon="🖼️")
-        st.rerun()
-
-    # --- Import JSON (loop-safe) ---
-    uploaded = st.file_uploader("Import JSON", type=["json"], key="import_json")
-    if uploaded is not None:
-        data_bytes = uploaded.getvalue()
-        digest = hashlib.sha256(data_bytes).hexdigest()
-        if st.session_state["_last_import_hash"] != digest:
-            import json
-            payload = json.loads(data_bytes.decode("utf-8"))
-            st.session_state["items"]  = [normalize_item(x) for x in payload.get("items", [])]
-            st.session_state["groups"] = [normalize_group(x) for x in payload.get("groups", [])]
-            st.session_state["editing_item_id"] = ""
-            st.session_state["_last_picker_id"] = ""
-            st.session_state["_last_import_hash"] = digest  # prevent re-import loop on rerun
-            LOG.info("IMPORT items=%d groups=%d", len(st.session_state["items"]), len(st.session_state["groups"]))
-            st.success("Imported.")
-            st.rerun()
-
-# ----------------- MAIN -----------------
-st.title("Roadmap Timeline")
-
-if not st.session_state["items"]:
-    st.markdown(
-        '<div class="empty"><b>No items yet.</b><br/>Use the sidebar to add your first event 👈</div>',
-        unsafe_allow_html=True
-    )
-else:
-    # Filter (exposed via key so sidebar export can reuse)
-    names = st.multiselect(
-        "Filter categories",
-        [g["content"] for g in st.session_state["groups"]],
-        key="filter_categories"
-    )
-    ids = {g["id"] for g in st.session_state["groups"] if g["content"] in names} if names else set()
-    items_view  = [i for i in st.session_state["items"]  if not ids or i.get("group", "") in ids]
-    groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
-
-    # One-shot export request (consumed by timeline)
-    export_req = st.session_state.get("_export_exact")
-    render_timeline(
-        items_view,
-        groups_view,
-        selected_id=st.session_state.get("editing_item_id", ""),
-        export=export_req
-    )
-    if export_req is not None:
-        st.session_state["_export_exact"] = None
+# One-shot export request (consumed by timeline)
+export_req = st.session_state.get("_export_exact")
+render_timeline(
+    items_view,
+    groups_view,
+    selected_id=st.session_state.get("editing_item_id", ""),
+    export=export_req
+)
+if export_req is not None:
+    st.session_state["_export_exact"] = None
