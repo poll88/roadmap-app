@@ -131,7 +131,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const groups = new vis.DataSet(groupsAll.map(g => ({ id: g.id, content: g.content })));
 
           const options = {
-            stack: true,                    // <-- show overlapping items (fix for "only one shows")
+            stack: true,                    // show overlapping items
             orientation: 'top',
             horizontalScroll: true,
             zoomKey: 'ctrlKey',
