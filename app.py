@@ -1,4 +1,4 @@
-# app.py — PNG export (exact on-screen view), simplified UI, fixed form defaults
+# app.py — dynamic axis + improved tab order + one-click PNG export
 
 import uuid
 import hashlib
@@ -9,7 +9,7 @@ import streamlit as st
 from lib.styles import GLOBAL_CSS
 from lib.state import (
     normalize_item, normalize_group, normalize_state,
-    reset_defaults, ensure_range, export_items_groups
+    reset_defaults, export_items_groups
 )
 from lib.timeline import render_timeline
 
@@ -46,9 +46,7 @@ def normalize_defaults():
     st.session_state.setdefault("form_start", date.today())
     st.session_state.setdefault("form_end", date.today())
     st.session_state.setdefault("form_color_label", PALETTE_OPTIONS[0])
-    # Choice is an existing group name or "(new…)"
     st.session_state.setdefault("form_category_choice", "(new…)")
-    # The new name (used only when choice == "(new…)")
     st.session_state.setdefault("form_category_new", "")
 
 def _prefill_form_from_item(it: dict, groups_by_id: dict):
@@ -76,23 +74,16 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
         st.session_state["form_category_new"] = ""
 
 def _resolve_group_id_from_choice(choice_text: str, new_name_text: str) -> str:
-    """Return an existing group id or create a new one when '(new…)' is selected."""
-    # If user chose an existing group by name, return that id
     if choice_text != "(new…)" and choice_text.strip():
         for g in st.session_state["groups"]:
             if (g.get("content") or "").strip().lower() == choice_text.strip().lower():
                 return g.get("id", "")
-
-    # Otherwise create a new group if a name is provided
     name = (new_name_text or "").strip()
     if not name:
-        return ""  # caller can decide to keep old group or leave empty
-
-    # check if group already exists with that name (case-insensitive)
+        return ""
     for g in st.session_state["groups"]:
         if (g.get("content") or "").strip().lower() == name.lower():
             return g.get("id", "")
-
     gid = str(uuid.uuid4())
     st.session_state["groups"].append(normalize_group({
         "id": gid,
@@ -150,15 +141,13 @@ if selected_label != "(none)":
     selected_value = picker_values[idx]
 st.session_state["editing_item_id"] = selected_value
 
-# Prefill (ensures defaults are valid w.r.t. options)
+# Prefill
 if selected_value:
     for it in st.session_state["items"]:
         if str(it.get("id")) == selected_value:
             _prefill_form_from_item(it, groups_by_id)
             break
 else:
-    # If no items exist, make sure category choice defaults to either the first existing
-    # group name or "(new…)" so the selectbox always has a valid default.
     if st.session_state["groups"]:
         first_name = st.session_state["groups"][0].get("content", "")
         if first_name:
@@ -166,29 +155,33 @@ else:
     else:
         st.session_state["form_category_choice"] = "(new…)"
 
-# ---- Form ----
+# ---- Form (tab order: Title → Subtitle → Category → Start → End → Color) ----
 with st.form("item_form", clear_on_submit=False):
-    c1, c2 = st.columns([2, 2])
-    with c1:
+    # Row 1: Title | Subtitle
+    r1c1, r1c2 = st.columns([2, 2])
+    with r1c1:
         st.text_input("Title", key="form_title")
+    with r1c2:
+        st.text_input("Subtitle (optional)", key="form_subtitle")
 
-        # Category choice (existing or new)
+    # Row 2: Category (and possibly new name) | Start
+    r2c1, r2c2 = st.columns([2, 2])
+    with r2c1:
         category_options = [g["content"] for g in st.session_state["groups"]] + ["(new…)"]
-        # If current choice is invalid (e.g., groups changed), coerce to first or "(new…)"
         if st.session_state["form_category_choice"] not in category_options:
             st.session_state["form_category_choice"] = category_options[0] if category_options else "(new…)"
         st.selectbox("Category", category_options, key="form_category_choice")
-
-        # Only show when creating a new category
         if st.session_state["form_category_choice"] == "(new…)":
             st.text_input("New category name", key="form_category_new")
-
-        st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
-
-    with c2:
-        st.text_input("Subtitle (optional)", key="form_subtitle")
+    with r2c2:
         st.date_input("Start", key="form_start")
+
+    # Row 3: End | Color
+    r3c1, r3c2 = st.columns([2, 2])
+    with r3c1:
         st.date_input("End", key="form_end")
+    with r3c2:
+        st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
 
     col_add, col_save, col_del = st.columns(3)
     with col_add:
@@ -199,10 +192,6 @@ with st.form("item_form", clear_on_submit=False):
         btn_del = st.form_submit_button("Delete")
 
 # ---- Form actions ----
-if 'btn_add' not in locals(): btn_add = False
-if 'btn_save' not in locals(): btn_save = False
-if 'btn_del' not in locals(): btn_del = False
-
 if btn_add:
     title = (st.session_state["form_title"] or "").strip()
     if not title:
@@ -267,13 +256,10 @@ if btn_del:
 
 st.divider()
 
-# ---- Export PNG: simple one-to-one of visible timeline ----
+# ---- Export PNG: one-to-one of visible timeline ----
 st.subheader("🎨 Export PNG")
 if st.button("Download PNG", use_container_width=True):
-    st.session_state["_export_exact"] = {
-        "kind": "png",      # handled in lib/timeline.py
-        "mode": "visible",  # export exactly what's on screen
-    }
+    st.session_state["_export_exact"] = {"kind": "png", "mode": "visible"}
     st.toast("Exporting PNG…", icon="🖼️")
 
 # ---- Filters & Timeline render ----
@@ -287,7 +273,6 @@ ids = {g["id"] for g in st.session_state["groups"] if g["content"] in names} if 
 items_view  = [i for i in st.session_state["items"]  if not ids or i.get("group", "") in ids]
 groups_view = [g for g in st.session_state["groups"] if not ids or g["id"] in ids]
 
-# One-shot export request (consumed by timeline)
 export_req = st.session_state.get("_export_exact")
 render_timeline(
     items_view,
