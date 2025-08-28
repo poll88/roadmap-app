@@ -1,5 +1,5 @@
-# lib/timeline.py — robust vis loader, Montserrat, ungrouped fallback, tl.fit(),
-# on-page debug panel, and one-to-one PNG export (no preview window).
+# lib/timeline.py — dynamic axis (auto), Montserrat, ungrouped fallback, tl.fit(),
+# robust CDN loader, one-to-one PNG export (no preview window)
 
 import json
 from datetime import date, datetime, timedelta
@@ -33,7 +33,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             "content": i.get("content"),
             "start": _dt(i.get("start")),
             "end": _dt(i.get("end")),
-            "group": i.get("group"),  # may be "", None, or a real id
+            "group": i.get("group"),
             "style": i.get("style"),
             "subtitle": i.get("subtitle", ""),
         } for i in items
@@ -50,18 +50,11 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
-    today = date.today()
-    def next_weekday(dt, weekday):
-        return dt + timedelta(days=(weekday - dt.weekday()) % 7)
-    ws = next_weekday(today, 5).isoformat()
-    we = next_weekday(today, 0).isoformat()
-
     html_template = """
 <!doctype html>
 <html>
   <head>
     <meta charset="utf-8"/>
-    <!-- Montserrat -->
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
       :root {
@@ -74,53 +67,26 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         height:__HEIGHT__px; background: transparent;
         border-radius:12px; border:1px solid #e7e9f2;
       }
-      .vis-time-axis .text { font-size:12px; font-weight:600 }
-      .vis-labelset .vis-label .vis-inner { font-weight:700 }
-      .vis-item .vis-item-content { line-height:1.15 }
       .ttl { font-weight:700 }
       .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
-
-      /* Debug panel */
-      #dbg {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-        font-size: 12px; line-height: 1.35;
-        background: #0b102016; color: #0b1020;
-        border: 1px dashed #c7ccda; border-radius: 8px;
-        padding: 10px; margin-top: 10px; white-space: pre-wrap;
-      }
-      #dbg b { color:#111; }
     </style>
   </head>
   <body>
-    <div id="wrap">
-      <div id="timeline"></div>
-      <details open style="margin-top:8px">
-        <summary>Debug</summary>
-        <div id="dbg">Booting…</div>
-      </details>
-    </div>
+    <div id="wrap"><div id="timeline"></div></div>
 
     <script>
       const __CSS_URLS__ = __CSS_URLS_JSON__;
       const __JS_URLS__  = __JS_URLS_JSON__;
       const __DTI_URLS__ = __DTI_URLS_JSON__;
 
-      // Put data on window so later code can read it.
       window.__TL_DATA__ = {
         ITEMS: __ITEMS__,
         GROUPS: __GROUPS__,
-        EXPORT: __EXPORT__,
-        WS: "__WS__",
-        WE: "__WE__",
+        EXPORT: __EXPORT__
       };
 
       (function() {
         const D = window.__TL_DATA__;
-        const dbg = (msg) => {
-          const el = document.getElementById('dbg');
-          if (el) el.textContent = String(msg);
-          console.log('[timeline]', msg);
-        };
 
         function loadCSSOnce(urls) {
           return Promise.all(urls.map(url => new Promise((resolve) => {
@@ -150,26 +116,12 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 
         function layout() {
           const el = document.getElementById('timeline');
+          if (!el || !window.vis) return;
 
           const itemsIn = Array.isArray(D.ITEMS) ? D.ITEMS : [];
           const groupsIn = Array.isArray(D.GROUPS) ? D.GROUPS : [];
 
-          // Debug snapshot
-          dbg([
-            'vis loaded? ' + !!window.vis,
-            'items: ' + itemsIn.length,
-            itemsIn.length ? 'first item: ' + JSON.stringify(itemsIn[0], null, 2) : 'first item: (none)',
-            'groups: ' + groupsIn.length,
-            groupsIn.length ? ('group ids: ' + groupsIn.map(g=>g.id).join(', ')) : '(no groups)',
-          ].join('\\n'));
-
-          if (!el) return;
-          if (!window.vis) {
-            el.innerHTML = '<div style="padding:16px;color:#999">Failed to load timeline library.</div>';
-            return;
-          }
-
-          // Ensure every item has a valid group (fallback to "_ungrouped")
+          // Fallback group so items with empty group still show.
           const NEED_UNGROUPED = itemsIn.some(it => !it.group) || groupsIn.length === 0;
           const groupsAll = NEED_UNGROUPED
             ? [{ id: "_ungrouped", content: "Ungrouped" }].concat(groupsIn)
@@ -181,7 +133,6 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
               content: '<div class="ttl">' + (it.content || '') + '</div><div class="sub">' + (it.subtitle || '') + '</div>',
               start: it.start, end: it.end, style: it.style
             };
-            // ✅ FIX: use JS '&&' (not Python 'and')
             obj.group = (it.group && String(it.group).trim()) ? it.group : "_ungrouped";
             return obj;
           }));
@@ -195,29 +146,17 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             zoomKey: 'ctrlKey',
             zoomMax: 1000 * 60 * 60 * 24 * 366 * 10,
             zoomMin: 1000 * 60 * 60 * 12,
-            timeAxis: { scale: 'day', step: 1 },
-            format: { minorLabels: { day: 'D MMM', month: 'MMM YY' } },
-            weekends: true,
+            // ⬇️ dynamic axis: do NOT force scale/step
+            // (vis will auto-pick day/week/month based on the visible range)
             showMajorLabels: true,
             showMinorLabels: true,
-            margin: { item: 8, axis: 12 },
+            margin: { item: 8, axis: 12 }
           };
 
-          let tl;
-          try {
-            tl = new vis.Timeline(el, items, groups, options);
-            window._tl = tl;
-          } catch (e) {
-            dbg('Timeline ctor error: ' + (e && e.message ? e.message : e));
-            el.innerHTML = '<div style="padding:16px;color:#c00">Timeline init error. See console.</div>';
-            return;
-          }
+          const tl = new vis.Timeline(el, items, groups, options);
+          window._tl = tl;
 
-          try {
-            if (items.length) tl.fit();
-          } catch (e) {
-            dbg('fit() error: ' + (e && e.message ? e.message : e));
-          }
+          try { if (items.length) tl.fit(); } catch (e) {}
         }
 
         function init() {
@@ -226,14 +165,11 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             .then(() => {
               layout();
               const EX = (D.EXPORT || null);
-              if (EX && EX.kind === 'png') setTimeout(() => exportPNG(EX), 80);
+              if (EX && EX.kind === 'png') setTimeout(() => exportPNG(EX), 60);
             })
-            .catch((e) => {
+            .catch(() => {
               const el = document.getElementById('timeline');
               if (el) el.innerHTML = '<div style="padding:16px;color:#999">Timeline failed to load.</div>';
-              const msg = (e && e.message) ? e.message : String(e);
-              const d = document.getElementById('dbg'); if (d) d.textContent = 'Loader error: ' + msg;
-              console.error(e);
             });
         }
 
@@ -291,10 +227,8 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         .replace("__ITEMS__", items_json)
         .replace("__GROUPS__", groups_json)
         .replace("__EXPORT__", export_json)
-        .replace("__WS__", ws)
-        .replace("__WE__", we)
         .replace("__CSS_URLS_JSON__", css_urls)
         .replace("__JS_URLS_JSON__", js_urls)
         .replace("__DTI_URLS_JSON__", dti_urls)
     )
-    components.html(html, height=height_px + 120, scrolling=False)
+    components.html(html, height=height_px + 20, scrolling=False)
