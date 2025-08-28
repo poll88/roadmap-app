@@ -154,6 +154,9 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 
         const tl = new vis.Timeline(el, items, groups, options);
         window._tl = tl;
+
+        // Ensure the viewport shows your items (this was the missing line).
+        try {{ if ((D.ITEMS || []).length) tl.fit(); }} catch (e) {{}}
       }}
 
       function init() {{
@@ -196,7 +199,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         const bgcolor = isTransparent(tlBg) ? bodyBg : tlBg;
 
         const ts = new Date().toISOString().replaceAll(':','-').slice(0,19);
-        const filename = 'timeline_' + ts + '.png';  // <-- no template literal
+        const filename = 'timeline_' + ts + '.png';
 
         try {{
           const dataUrl = await window.domtoimage.toPng(tl, {{ bgcolor, cacheBust:true }});
