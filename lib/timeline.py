@@ -196,7 +196,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         const bgcolor = isTransparent(tlBg) ? bodyBg : tlBg;
 
         const ts = new Date().toISOString().replaceAll(':','-').slice(0,19);
-        const filename = `timeline_${{{ts}}}.png`;  // <-- escaped so Python f-string doesn't eat it
+        const filename = 'timeline_' + ts + '.png';  // <-- no template literal
 
         try {{
           const dataUrl = await window.domtoimage.toPng(tl, {{ bgcolor, cacheBust:true }});
