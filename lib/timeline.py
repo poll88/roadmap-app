@@ -1,5 +1,5 @@
-# lib/timeline.py — dynamic axis, Montserrat font in PNG, optional transparent bg,
-# frameless export, robust loader, ungrouped fallback, and stacked items.
+# lib/timeline.py — dynamic axis, stacked items, Montserrat font in exported PNG,
+# transparent/opaque background toggle that actually works, robust loader, ungrouped fallback.
 
 import json
 from datetime import date, datetime
@@ -65,10 +65,24 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       #timeline {
         height:__HEIGHT__px;
         background: transparent;
-        border-radius:12px; border:1px solid #e7e9f2;  /* visible frame on-screen; removed in export */
+        border-radius:12px; border:1px solid #e7e9f2;  /* on-screen frame; removed in export */
       }
       .ttl { font-weight:700 }
       .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
+
+      /* When exporting with transparent background, we add .exporting to the root
+         to kill big white panels — but keep item rectangles (inline styles) intact. */
+      #timeline.exporting,
+      #timeline.exporting .vis-timeline,
+      #timeline.exporting .vis-panel,
+      #timeline.exporting .vis-panel.vis-center,
+      #timeline.exporting .vis-panel.vis-left,
+      #timeline.exporting .vis-panel.vis-right,
+      #timeline.exporting .vis-foreground,
+      #timeline.exporting .vis-background,
+      #timeline.exporting .vis-time-axis {
+        background: transparent !important;
+      }
     </style>
   </head>
   <body>
@@ -171,6 +185,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         }
         init();
 
+        // ---------- PNG Export ----------
         async function exportPNG(EXPORT) {
           const tl = document.getElementById('timeline');
           if (!tl) return;
@@ -191,7 +206,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           }
           await loadScriptOnce(__DTI_URLS__);
 
-          // Ensure Montserrat has loaded and will be used by the clone
+          // Ensure Montserrat is loaded
           async function ensureFonts() {
             if (document.fonts && document.fonts.ready) {
               try { await document.fonts.ready; } catch (e) {}
@@ -216,15 +231,23 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 
           const includeBg = !!(EXPORT && EXPORT.includeBg);
 
+          // Compute export background with sensible fallback to white
           function isTransparent(c) {
             if (!c) return true;
             return c === 'transparent' || c.startsWith('rgba(0, 0, 0, 0)');
           }
           const csTl   = getComputedStyle(tl);
           const csBody = getComputedStyle(document.body);
-          const bg = isTransparent(csTl.backgroundColor) ? csBody.backgroundColor : csTl.backgroundColor;
+          let exportBg;
+          if (includeBg) {
+            if (!isTransparent(csTl.backgroundColor)) exportBg = csTl.backgroundColor;
+            else if (!isTransparent(csBody.backgroundColor)) exportBg = csBody.backgroundColor;
+            else exportBg = '#ffffff'; // fallback: Streamlit default page bg
+          } else {
+            exportBg = 'transparent';
+          }
 
-          // strip on-screen frame for export
+          // Temporarily remove frame; optionally strip big panel backgrounds
           const old = {
             border: tl.style.border,
             borderRadius: tl.style.borderRadius,
@@ -233,19 +256,34 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           };
           tl.style.border = 'none';
           tl.style.borderRadius = '0px';
+
           if (!includeBg) {
+            tl.classList.add('exporting');           // CSS above makes panels transparent
             tl.style.background = 'transparent';
             tl.style.backgroundColor = 'transparent';
           }
+
+          // Force inline Montserrat on the root + descendants for the clone
+          function walk(el, fn) {
+            fn(el);
+            for (let i = 0; i < el.children.length; i++) walk(el.children[i], fn);
+          }
+          const touched = [];
+          const family = "'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
+          walk(tl, (node) => {
+            const prev = node.style.fontFamily;
+            node.style.fontFamily = family;
+            touched.push([node, prev]);
+          });
 
           const ts = new Date().toISOString().replaceAll(':','-').slice(0,19);
           const filename = 'timeline_' + ts + '.png';
 
           try {
             const dataUrl = await window.domtoimage.toPng(tl, {
-              bgcolor: includeBg ? bg : 'transparent',
-              cacheBust: true,
-              style: { fontFamily: "'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial" }
+              bgcolor: exportBg,
+              cacheBust: true
+              // (we already inlined font family on every node)
             });
             const a = document.createElement('a');
             a.href = dataUrl; a.download = filename;
@@ -254,10 +292,13 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             console.error('PNG export failed', err);
             alert('PNG export failed. See console for details.');
           } finally {
+            // Restore visuals and fonts
+            for (const [el, prev] of touched) el.style.fontFamily = prev || '';
             tl.style.border = old.border;
             tl.style.borderRadius = old.borderRadius;
             tl.style.background = old.background;
             tl.style.backgroundColor = old.backgroundColor;
+            tl.classList.remove('exporting');
           }
         }
       })();
