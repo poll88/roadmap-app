@@ -50,13 +50,14 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
     rows = max(1, len(groups))
     height_px = max(260, 80 * rows + 120)
 
-    # Weekends: light banding
+    # Weekends: light banding (not visible now, kept for future tweaks)
+    from datetime import timedelta as _td
     def next_weekday(dt, weekday):
-        d = dt + timedelta(days=(weekday - dt.weekday()) % 7)
+        d = dt + _td(days=(weekday - dt.weekday()) % 7)
         return d
     today = date.today()
-    ws = next_weekday(today - timedelta(days=7), 5).isoformat()  # last Saturday
-    we = next_weekday(today + timedelta(days=7), 0).isoformat()  # next Monday
+    ws = next_weekday(today, 5).isoformat()
+    we = next_weekday(today, 0).isoformat()
 
     html_template = f"""
 <!doctype html>
@@ -106,7 +107,6 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       function loadCSSOnce(urls) {{
         const inserted = new Set();
         return Promise.all(urls.map(url => new Promise((resolve) => {{
-          if (inserted.has(url)) return resolve();
           const link = document.createElement('link');
           link.rel = 'stylesheet'; link.href = url; link.onload = () => resolve();
           link.onerror = () => resolve();
@@ -122,16 +122,6 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           s.onload = () => res(); s.onerror = rej;
           document.head.appendChild(s);
         }})), Promise.reject()).then(() => {{ window._visReady = true; }});
-      }}
-
-      function fmt(d) {{
-        const dt = new Date(d);
-        return dt.toISOString().slice(0,10);
-      }}
-
-      function monthAdd(base, n) {{
-        const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + n, 1));
-        return d;
       }}
 
       function layout() {{
@@ -157,10 +147,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           zoomMin: 1000 * 60 * 60 * 12,
           timeAxis: {{ scale: 'day', step: 1 }},
           format: {{
-            minorLabels: {{
-              day: 'D MMM',
-              month: 'MMM YY'
-            }},
+            minorLabels: {{ day: 'D MMM', month: 'MMM YY' }},
           }},
           weekends: true,
           showMajorLabels: true,
@@ -175,7 +162,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       function init() {{
         loadCSSOnce(__CSS_URLS__).then(() => loadJSOnce(__JS_URLS__)).then(() => {{
           layout();
-          const EX = D.EXPORT || null;
+          const EX = (D.EXPORT || null);
           if (EX && EX.kind === 'png') {{
             setTimeout(() => exportPNG(EX), 50);
           }}
@@ -185,11 +172,9 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       init();
 
       async function exportPNG(EXPORT) {{
-        // Export exactly the visible timeline node, with the same background.
         const tl = document.getElementById('timeline');
         if (!tl) return;
 
-        // Ensure dom-to-image-more is loaded
         async function loadScriptOnce(urls) {{
           if (window._dtiReady) return;
           for (const u of urls) {{
@@ -199,13 +184,12 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
                 s.onload = () => res(); s.onerror = rej; document.head.appendChild(s);
               }});
               window._dtiReady = true; return;
-            }} catch (e) {{ /* try next */ }}
+            }} catch (e) {{}}
           }}
           throw new Error('Failed to load dom-to-image-more');
         }}
         await loadScriptOnce(__DTI_URLS__);
 
-        // Compute background color: prefer timeline background, fall back to body
         function isTransparent(c) {{
           if (!c) return true;
           return c === 'transparent' || c.startsWith('rgba(0, 0, 0, 0)');
@@ -214,13 +198,11 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         const bodyBg= getComputedStyle(document.body).backgroundColor;
         const bgcolor = isTransparent(tlBg) ? bodyBg : tlBg;
 
-        // Filename (timestamp-based)
         const ts = new Date().toISOString().replaceAll(':','-').slice(0,19);
         const filename = `timeline_${ts}.png`;
 
         try {{
           const dataUrl = await window.domtoimage.toPng(tl, {{ bgcolor, cacheBust:true }});
-          // Trigger download directly
           const a = document.createElement('a');
           a.href = dataUrl; a.download = filename;
           document.body.appendChild(a); a.click(); a.remove();
