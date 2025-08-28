@@ -131,4 +131,140 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const items = new vis.DataSet(itemsIn.map(it => {
             const obj = {
               id: it.id,
-              content
+              content: '<div class="ttl">' + (it.content || '') + '</div><div class="sub">' + (it.subtitle || '') + '</div>',
+              start: it.start, end: it.end, style: it.style
+            };
+            obj.group = (it.group && String(it.group).trim()) ? it.group : "_ungrouped";
+            return obj;
+          }));
+
+          const groups = new vis.DataSet(groupsAll.map(g => ({ id: g.id, content: g.content })));
+
+          const options = {
+            stack: false,
+            orientation: 'top',
+            horizontalScroll: true,
+            zoomKey: 'ctrlKey',
+            zoomMax: 1000 * 60 * 60 * 24 * 366 * 10,
+            zoomMin: 1000 * 60 * 60 * 12,
+            // dynamic axis (let vis pick)
+            showMajorLabels: true,
+            showMinorLabels: true,
+            margin: { item: 8, axis: 12 }
+          };
+
+          const tl = new vis.Timeline(el, items, groups, options);
+          window._tl = tl;
+
+          try {
+            if (items.length) {
+              // Fit with a small padding so bars don’t hug the edges
+              const arr = items.get();
+              const mins = Math.min.apply(null, arr.map(x => +new Date(x.start)));
+              const maxs = Math.max.apply(null, arr.map(x => +new Date(x.end || x.start)));
+              const pad = Math.max(3 * 86400000, Math.round((maxs - mins) * 0.05));
+              tl.setWindow(new Date(mins - pad), new Date(maxs + pad), { animation: false });
+            }
+          } catch (e) {}
+        }
+
+        function init() {
+          loadCSSOnce(__CSS_URLS__)
+            .then(() => loadJSOnce(__JS_URLS__))
+            .then(() => {
+              layout();
+              const EX = (D.EXPORT || null);
+              if (EX && EX.kind === 'png') setTimeout(() => exportPNG(EX), 60);
+            })
+            .catch(() => {
+              const el = document.getElementById('timeline');
+              if (el) el.innerHTML = '<div style="padding:16px;color:#999">Timeline failed to load.</div>';
+            });
+        }
+
+        init();
+
+        async function exportPNG(EXPORT) {
+          const tl = document.getElementById('timeline');
+          if (!tl) return;
+
+          // Load dom-to-image-more
+          async function loadScriptOnce(urls) {
+            if (window._dtiReady) return;
+            for (const u of urls) {
+              try {
+                await new Promise((res, rej) => {
+                  const s = document.createElement('script'); s.src = u; s.async = true;
+                  s.onload = () => res(); s.onerror = rej; document.head.appendChild(s);
+                });
+                window._dtiReady = true; return;
+              } catch (e) {}
+            }
+            throw new Error('Failed to load dom-to-image-more');
+          }
+          await loadScriptOnce(__DTI_URLS__);
+
+          const includeBg = !!(EXPORT && EXPORT.includeBg);
+
+          // Compute background color (when included)
+          function isTransparent(c) {
+            if (!c) return true;
+            return c === 'transparent' || c.startsWith('rgba(0, 0, 0, 0)');
+          }
+          const csTl   = getComputedStyle(tl);
+          const csBody = getComputedStyle(document.body);
+          const bg = isTransparent(csTl.backgroundColor) ? csBody.backgroundColor : csTl.backgroundColor;
+
+          // Temporarily strip the on-screen frame for export
+          const old = {
+            border: tl.style.border,
+            borderRadius: tl.style.borderRadius,
+            background: tl.style.background,
+            backgroundColor: tl.style.backgroundColor
+          };
+          tl.style.border = 'none';
+          tl.style.borderRadius = '0px';
+          if (!includeBg) {
+            tl.style.background = 'transparent';
+            tl.style.backgroundColor = 'transparent';
+          }
+
+          const ts = new Date().toISOString().replaceAll(':','-').slice(0,19);
+          const filename = 'timeline_' + ts + '.png';
+
+          try {
+            const dataUrl = await window.domtoimage.toPng(
+              tl,
+              { bgcolor: includeBg ? bg : 'transparent', cacheBust: true }
+            );
+            const a = document.createElement('a');
+            a.href = dataUrl; a.download = filename;
+            document.body.appendChild(a); a.click(); a.remove();
+          } catch (err) {
+            console.error('PNG export failed', err);
+            alert('PNG export failed. See console for details.');
+          } finally {
+            // Restore original visuals
+            tl.style.border = old.border;
+            tl.style.borderRadius = old.borderRadius;
+            tl.style.background = old.background;
+            tl.style.backgroundColor = old.backgroundColor;
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
+    """
+
+    html = (
+        html_template
+        .replace("__HEIGHT__", str(height_px))
+        .replace("__ITEMS__", items_json)
+        .replace("__GROUPS__", groups_json)
+        .replace("__EXPORT__", export_json)
+        .replace("__CSS_URLS_JSON__", css_urls)
+        .replace("__JS_URLS_JSON__", js_urls)
+        .replace("__DTI_URLS_JSON__", dti_urls)
+    )
+    components.html(html, height=height_px + 20, scrolling=False)
