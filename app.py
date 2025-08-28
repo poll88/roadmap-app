@@ -1,5 +1,5 @@
-# app.py — unified Category input, working Save, add multiple items,
-# PNG export option (include background), correct form submit buttons
+# app.py — Save fixes (update selected or create if none), auto-select after Add,
+# unified Category input, multiple items, PNG export option
 
 import uuid
 import hashlib
@@ -28,6 +28,7 @@ ss.setdefault("editing_item_id", "")
 ss.setdefault("_last_import_hash", "")
 ss.setdefault("_export_exact", None)
 ss.setdefault("png_include_bg", True)  # export option
+ss.setdefault("picker_index", 0)
 
 # ------ Colors ------
 PALETTE_MAP = {
@@ -55,7 +56,6 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
     ss["form_category_name"] = groups_by_id.get(it.get("group", ""), "")
     ss["form_start"] = it.get("start") or date.today()
     ss["form_end"] = it.get("end") or date.today()
-    # color label from hex
     cur_color = it.get("color")
     for label, hexv in PALETTE_MAP.items():
         if hexv == cur_color:
@@ -63,10 +63,10 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
             break
 
 def _ensure_group_id_from_name(name_text: str) -> str:
-    """If name exists (case-insensitive), return its id; else create it."""
+    """If name exists (case-insensitive), return id; else create it."""
     name = (name_text or "").strip()
     if not name:
-        return ""  # allowed — items will show in the Ungrouped lane
+        return ""  # allowed — will render in Ungrouped
     for g in ss["groups"]:
         if (g.get("content") or "").strip().lower() == name.lower():
             return g.get("id", "")
@@ -104,31 +104,28 @@ with st.sidebar:
     if st.button("Reset (clear all)", type="secondary"):
         keep_bg = ss.get("png_include_bg", True)
         reset_defaults(ss)
-        ss["png_include_bg"] = keep_bg  # keep the user's PNG setting
+        ss["png_include_bg"] = keep_bg
         st.rerun()
 
 # Lookups & defaults
 groups_by_id = {g.get("id"): g.get("content", "") for g in ss["groups"]}
-_normalize_form_defaults = _normalize_form_defaults
 _normalize_form_defaults()
 
-# ---- Pick item to edit (stable selection) ----
+# ---- Picker (keep selection across reruns) ----
 picker_labels = [_label_for_item(it, groups_by_id) for it in ss["items"]]
 picker_ids    = [str(it.get("id", "")) for it in ss["items"]]
 id_by_label   = {lbl: iid for lbl, iid in zip(picker_labels, picker_ids)}
 
-if "picker_index" not in ss:
-    ss["picker_index"] = 0
-if ss.get("editing_item_id"):
-    try:
-        ss["picker_index"] = 1 + picker_ids.index(ss["editing_item_id"])
-    except ValueError:
-        ss["picker_index"] = 0
+# If we already have a chosen id, bias picker to show it as selected
+if ss.get("editing_item_id") and ss["editing_item_id"] in picker_ids:
+    ss["picker_index"] = 1 + picker_ids.index(ss["editing_item_id"])
+else:
+    ss["picker_index"] = min(ss["picker_index"], len(picker_labels))
 
 selected_label = st.selectbox(
     "Select item to edit",
     options=["(none)"] + picker_labels,
-    index=min(ss["picker_index"], len(picker_labels))
+    index=ss["picker_index"]
 )
 eid = id_by_label.get(selected_label, "")
 ss["editing_item_id"] = eid
@@ -163,61 +160,65 @@ with st.form("item_form", clear_on_submit=False):
         st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
 
     c1, c2, c3 = st.columns(3)
-    # NOTE: st.form_submit_button does NOT support key= -> removed
     with c1: btn_add  = st.form_submit_button("Add new",   type="primary",  use_container_width=True)
     with c2: btn_save = st.form_submit_button("Save changes",               use_container_width=True)
     with c3: btn_del  = st.form_submit_button("Delete",     type="secondary",use_container_width=True)
 
 # ---- Actions ----
+def _build_item_dict(item_id: str) -> dict:
+    col_hex = PALETTE_MAP[ss["form_color_label"]]
+    gid = _ensure_group_id_from_name(ss.get("form_category_name", ""))
+    return normalize_item({
+        "id": item_id,
+        "content": (ss["form_title"] or "").strip(),
+        "subtitle": ss["form_subtitle"],
+        "start": ss["form_start"],
+        "end":   ss["form_end"],
+        "group": gid,
+        "color": col_hex,
+        "style": f"background:{col_hex}; border-color:{col_hex}",
+    })
+
 if btn_add:
     title = (ss["form_title"] or "").strip()
     if not title:
         st.warning("Title is required.")
     else:
-        col_hex = PALETTE_MAP[ss["form_color_label"]]
-        gid = _ensure_group_id_from_name(ss.get("form_category_name", ""))
-        item = normalize_item({
-            "id": str(uuid.uuid4()),
-            "content": title,
-            "subtitle": ss["form_subtitle"],
-            "start": ss["form_start"],
-            "end":   ss["form_end"],
-            "group": gid,
-            "color": col_hex,
-            "style": f"background:{col_hex}; border-color:{col_hex}",
-        })
+        new_id = str(uuid.uuid4())
+        item = _build_item_dict(new_id)
         ss["items"].append(item)
-        LOG.info("ADD %s", item["id"])
-        ss["editing_item_id"] = ""   # stay in add mode
+        # ✅ auto-select the new item so Save will affect it
+        ss["editing_item_id"] = new_id
         st.success("Item added.")
         st.rerun()
 
 if btn_save:
-    if not ss.get("editing_item_id"):
-        st.warning("Select an item to edit (top dropdown).")
+    title = (ss["form_title"] or "").strip()
+    if not title:
+        st.warning("Title is required.")
+    elif not ss.get("editing_item_id"):
+        # No item selected? Treat Save as "create or update last".
+        new_id = str(uuid.uuid4())
+        ss["items"].append(_build_item_dict(new_id))
+        ss["editing_item_id"] = new_id
+        st.success("Item saved (new).")
+        st.rerun()
     else:
-        col_hex = PALETTE_MAP[ss["form_color_label"]]
-        gid = _ensure_group_id_from_name(ss.get("form_category_name", ""))
+        target_id = str(ss["editing_item_id"])
         updated = False
         for i, it in enumerate(ss["items"]):
-            if str(it.get("id")) == str(ss["editing_item_id"]):
-                ss["items"][i] = normalize_item({
-                    "id": ss["editing_item_id"],
-                    "content": ss["form_title"],
-                    "subtitle": ss["form_subtitle"],
-                    "start": ss["form_start"],
-                    "end":   ss["form_end"],
-                    "group": gid if gid != "" else it.get("group", ""),
-                    "color": col_hex,
-                    "style": f"background:{col_hex}; border-color:{col_hex}",
-                })
+            if str(it.get("id")) == target_id:
+                ss["items"][i] = _build_item_dict(target_id)
                 updated = True
                 break
         if updated:
             st.success("Item updated.")
             st.rerun()
         else:
-            st.error("Could not find the selected item to update.")
+            # Fallback: if not found (rare), create it
+            ss["items"].append(_build_item_dict(target_id))
+            st.info("Item was missing; created it instead.")
+            st.rerun()
 
 if btn_del:
     if not ss.get("editing_item_id"):
