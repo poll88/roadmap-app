@@ -1,4 +1,5 @@
-# app.py — unified Category input, working Save, add multiple items, PNG export option
+# app.py — unified Category input, working Save, add multiple items,
+# PNG export option (include background), correct form submit buttons
 
 import uuid
 import hashlib
@@ -65,7 +66,7 @@ def _ensure_group_id_from_name(name_text: str) -> str:
     """If name exists (case-insensitive), return its id; else create it."""
     name = (name_text or "").strip()
     if not name:
-        return ""  # allowed — renders in Ungrouped
+        return ""  # allowed — items will show in the Ungrouped lane
     for g in ss["groups"]:
         if (g.get("content") or "").strip().lower() == name.lower():
             return g.get("id", "")
@@ -108,15 +109,14 @@ with st.sidebar:
 
 # Lookups & defaults
 groups_by_id = {g.get("id"): g.get("content", "") for g in ss["groups"]}
-_normalize_form_defaults = _normalize_form_defaults  # (avoid linter warning)
+_normalize_form_defaults = _normalize_form_defaults
 _normalize_form_defaults()
 
 # ---- Pick item to edit (stable selection) ----
-picker_labels = [ _label_for_item(it, groups_by_id) for it in ss["items"] ]
-picker_ids    = [ str(it.get("id", ""))             for it in ss["items"] ]
+picker_labels = [_label_for_item(it, groups_by_id) for it in ss["items"]]
+picker_ids    = [str(it.get("id", "")) for it in ss["items"]]
 id_by_label   = {lbl: iid for lbl, iid in zip(picker_labels, picker_ids)}
 
-# keep selection across reruns
 if "picker_index" not in ss:
     ss["picker_index"] = 0
 if ss.get("editing_item_id"):
@@ -163,9 +163,10 @@ with st.form("item_form", clear_on_submit=False):
         st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
 
     c1, c2, c3 = st.columns(3)
-    with c1: btn_add  = st.form_submit_button("Add new",   type="primary",  use_container_width=True, key="btn_add")
-    with c2: btn_save = st.form_submit_button("Save changes",               use_container_width=True, key="btn_save")
-    with c3: btn_del  = st.form_submit_button("Delete",     type="secondary",use_container_width=True, key="btn_del")
+    # NOTE: st.form_submit_button does NOT support key= -> removed
+    with c1: btn_add  = st.form_submit_button("Add new",   type="primary",  use_container_width=True)
+    with c2: btn_save = st.form_submit_button("Save changes",               use_container_width=True)
+    with c3: btn_del  = st.form_submit_button("Delete",     type="secondary",use_container_width=True)
 
 # ---- Actions ----
 if btn_add:
@@ -181,7 +182,7 @@ if btn_add:
             "subtitle": ss["form_subtitle"],
             "start": ss["form_start"],
             "end":   ss["form_end"],
-            "group": gid,  # empty -> Ungrouped lane is fine
+            "group": gid,
             "color": col_hex,
             "style": f"background:{col_hex}; border-color:{col_hex}",
         })
@@ -233,7 +234,11 @@ st.divider()
 st.subheader("🎨 Export PNG")
 st.checkbox("Include background color in PNG", key="png_include_bg")
 if st.button("Download PNG", use_container_width=True):
-    ss["_export_exact"] = {"kind": "png", "mode": "visible", "includeBg": bool(ss.get("png_include_bg", True))}
+    ss["_export_exact"] = {
+        "kind": "png",
+        "mode": "visible",
+        "includeBg": bool(ss.get("png_include_bg", True)),
+    }
     st.toast("Exporting PNG…", icon="🖼️")
 
 # ---- Filters & Timeline ----
