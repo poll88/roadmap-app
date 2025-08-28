@@ -1,8 +1,8 @@
-# lib/timeline.py — dynamic axis, Montserrat, robust loader, ungrouped fallback,
-# PNG export without frame + optional transparent background
+# lib/timeline.py — dynamic axis, Montserrat font in PNG, optional transparent bg,
+# frameless export, robust loader, ungrouped fallback, and stacked items.
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import streamlit.components.v1 as components
 
 _VIS_CSS_URLS = [
@@ -38,10 +38,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             "subtitle": i.get("subtitle", ""),
         } for i in items
     ])
-    groups_json = json.dumps([
-        {"id": g.get("id"), "content": g.get("content")}
-        for g in groups
-    ])
+    groups_json = json.dumps([{"id": g.get("id"), "content": g.get("content")} for g in groups])
     export_json = json.dumps(export or {})
     css_urls = json.dumps(_VIS_CSS_URLS)
     js_urls  = json.dumps(_VIS_JS_URLS)
@@ -55,18 +52,20 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 <html>
   <head>
     <meta charset="utf-8"/>
+    <!-- speed up web-fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Montserrat -->
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-      :root {
-        --font: 'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, "Noto Sans", "Helvetica Neue", sans-serif;
-      }
+      :root { --font: 'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, "Noto Sans", "Helvetica Neue", sans-serif; }
       html, body { background: transparent; margin:0; padding:0; }
       body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis { font-family: var(--font); }
       #wrap { position: relative; }
       #timeline {
         height:__HEIGHT__px;
         background: transparent;
-        border-radius:12px; border:1px solid #e7e9f2; /* on-screen frame only (we strip it for export) */
+        border-radius:12px; border:1px solid #e7e9f2;  /* visible frame on-screen; removed in export */
       }
       .ttl { font-weight:700 }
       .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
@@ -80,11 +79,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       const __JS_URLS__  = __JS_URLS_JSON__;
       const __DTI_URLS__ = __DTI_URLS_JSON__;
 
-      window.__TL_DATA__ = {
-        ITEMS: __ITEMS__,
-        GROUPS: __GROUPS__,
-        EXPORT: __EXPORT__
-      };
+      window.__TL_DATA__ = { ITEMS: __ITEMS__, GROUPS: __GROUPS__, EXPORT: __EXPORT__ };
 
       (function() {
         const D = window.__TL_DATA__;
@@ -93,12 +88,10 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           return Promise.all(urls.map(url => new Promise((resolve) => {
             const link = document.createElement('link');
             link.rel = 'stylesheet'; link.href = url;
-            link.onload = () => resolve();
-            link.onerror = () => resolve();
+            link.onload = () => resolve(); link.onerror = () => resolve();
             document.head.appendChild(link);
           })));
         }
-
         function loadJSOnce(urls) {
           if (window._visReady) return Promise.resolve();
           return new Promise((resolve, reject) => {
@@ -122,11 +115,9 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const itemsIn = Array.isArray(D.ITEMS) ? D.ITEMS : [];
           const groupsIn = Array.isArray(D.GROUPS) ? D.GROUPS : [];
 
-          // Fallback group so items with empty group still show.
+          // Ensure every item has a valid group
           const NEED_UNGROUPED = itemsIn.some(it => !it.group) || groupsIn.length === 0;
-          const groupsAll = NEED_UNGROUPED
-            ? [{ id: "_ungrouped", content: "Ungrouped" }].concat(groupsIn)
-            : groupsIn.slice();
+          const groupsAll = NEED_UNGROUPED ? [{ id: "_ungrouped", content: "Ungrouped" }].concat(groupsIn) : groupsIn.slice();
 
           const items = new vis.DataSet(itemsIn.map(it => {
             const obj = {
@@ -137,20 +128,18 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             obj.group = (it.group && String(it.group).trim()) ? it.group : "_ungrouped";
             return obj;
           }));
-
           const groups = new vis.DataSet(groupsAll.map(g => ({ id: g.id, content: g.content })));
 
           const options = {
-            stack: false,
+            stack: true,                    // <-- show overlapping items (fix for "only one shows")
             orientation: 'top',
             horizontalScroll: true,
             zoomKey: 'ctrlKey',
             zoomMax: 1000 * 60 * 60 * 24 * 366 * 10,
             zoomMin: 1000 * 60 * 60 * 12,
-            // dynamic axis (let vis pick)
             showMajorLabels: true,
             showMinorLabels: true,
-            margin: { item: 8, axis: 12 }
+            margin: { item: 8, axis: 12 }  // dynamic axis (scale auto)
           };
 
           const tl = new vis.Timeline(el, items, groups, options);
@@ -158,7 +147,6 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 
           try {
             if (items.length) {
-              // Fit with a small padding so bars don’t hug the edges
               const arr = items.get();
               const mins = Math.min.apply(null, arr.map(x => +new Date(x.start)));
               const maxs = Math.max.apply(null, arr.map(x => +new Date(x.end || x.start)));
@@ -181,7 +169,6 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
               if (el) el.innerHTML = '<div style="padding:16px;color:#999">Timeline failed to load.</div>';
             });
         }
-
         init();
 
         async function exportPNG(EXPORT) {
@@ -204,9 +191,31 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           }
           await loadScriptOnce(__DTI_URLS__);
 
+          // Ensure Montserrat has loaded and will be used by the clone
+          async function ensureFonts() {
+            if (document.fonts && document.fonts.ready) {
+              try { await document.fonts.ready; } catch (e) {}
+              const reqs = [
+                "400 14px 'Montserrat'",
+                "600 14px 'Montserrat'",
+                "700 14px 'Montserrat'",
+              ];
+              try { await Promise.all(reqs.map(r => document.fonts.load(r))); } catch (e) {}
+            } else {
+              const span = document.createElement('span');
+              span.textContent = 'A';
+              span.style.visibility = 'hidden';
+              span.style.fontFamily = "'Montserrat', sans-serif";
+              document.body.appendChild(span);
+              await new Promise(r => setTimeout(r, 120));
+              span.remove();
+            }
+            await new Promise(r => setTimeout(r, 50));
+          }
+          await ensureFonts();
+
           const includeBg = !!(EXPORT && EXPORT.includeBg);
 
-          // Compute background color (when included)
           function isTransparent(c) {
             if (!c) return true;
             return c === 'transparent' || c.startsWith('rgba(0, 0, 0, 0)');
@@ -215,7 +224,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const csBody = getComputedStyle(document.body);
           const bg = isTransparent(csTl.backgroundColor) ? csBody.backgroundColor : csTl.backgroundColor;
 
-          // Temporarily strip the on-screen frame for export
+          // strip on-screen frame for export
           const old = {
             border: tl.style.border,
             borderRadius: tl.style.borderRadius,
@@ -233,10 +242,11 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const filename = 'timeline_' + ts + '.png';
 
           try {
-            const dataUrl = await window.domtoimage.toPng(
-              tl,
-              { bgcolor: includeBg ? bg : 'transparent', cacheBust: true }
-            );
+            const dataUrl = await window.domtoimage.toPng(tl, {
+              bgcolor: includeBg ? bg : 'transparent',
+              cacheBust: true,
+              style: { fontFamily: "'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial" }
+            });
             const a = document.createElement('a');
             a.href = dataUrl; a.download = filename;
             document.body.appendChild(a); a.click(); a.remove();
@@ -244,7 +254,6 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             console.error('PNG export failed', err);
             alert('PNG export failed. See console for details.');
           } finally {
-            // Restore original visuals
             tl.style.border = old.border;
             tl.style.borderRadius = old.borderRadius;
             tl.style.background = old.background;
