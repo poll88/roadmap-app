@@ -1,5 +1,5 @@
-# lib/timeline.py — dynamic axis (auto), Montserrat, ungrouped fallback, tl.fit(),
-# robust CDN loader, one-to-one PNG export (no preview window)
+# lib/timeline.py — dynamic axis, Montserrat, robust loader, ungrouped fallback,
+# PNG export without frame + optional transparent background
 
 import json
 from datetime import date, datetime, timedelta
@@ -64,8 +64,9 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       body, #timeline, .vis-timeline, .vis-item, .vis-item-content, .vis-label, .vis-time-axis { font-family: var(--font); }
       #wrap { position: relative; }
       #timeline {
-        height:__HEIGHT__px; background: transparent;
-        border-radius:12px; border:1px solid #e7e9f2;
+        height:__HEIGHT__px;
+        background: transparent;
+        border-radius:12px; border:1px solid #e7e9f2; /* on-screen frame only (we strip it for export) */
       }
       .ttl { font-weight:700 }
       .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
@@ -130,105 +131,4 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const items = new vis.DataSet(itemsIn.map(it => {
             const obj = {
               id: it.id,
-              content: '<div class="ttl">' + (it.content || '') + '</div><div class="sub">' + (it.subtitle || '') + '</div>',
-              start: it.start, end: it.end, style: it.style
-            };
-            obj.group = (it.group && String(it.group).trim()) ? it.group : "_ungrouped";
-            return obj;
-          }));
-
-          const groups = new vis.DataSet(groupsAll.map(g => ({ id: g.id, content: g.content })));
-
-          const options = {
-            stack: false,
-            orientation: 'top',
-            horizontalScroll: true,
-            zoomKey: 'ctrlKey',
-            zoomMax: 1000 * 60 * 60 * 24 * 366 * 10,
-            zoomMin: 1000 * 60 * 60 * 12,
-            // ⬇️ dynamic axis: do NOT force scale/step
-            // (vis will auto-pick day/week/month based on the visible range)
-            showMajorLabels: true,
-            showMinorLabels: true,
-            margin: { item: 8, axis: 12 }
-          };
-
-          const tl = new vis.Timeline(el, items, groups, options);
-          window._tl = tl;
-
-          try { if (items.length) tl.fit(); } catch (e) {}
-        }
-
-        function init() {
-          loadCSSOnce(__CSS_URLS__)
-            .then(() => loadJSOnce(__JS_URLS__))
-            .then(() => {
-              layout();
-              const EX = (D.EXPORT || null);
-              if (EX && EX.kind === 'png') setTimeout(() => exportPNG(EX), 60);
-            })
-            .catch(() => {
-              const el = document.getElementById('timeline');
-              if (el) el.innerHTML = '<div style="padding:16px;color:#999">Timeline failed to load.</div>';
-            });
-        }
-
-        init();
-
-        async function exportPNG(EXPORT) {
-          const tl = document.getElementById('timeline');
-          if (!tl) return;
-
-          async function loadScriptOnce(urls) {
-            if (window._dtiReady) return;
-            for (const u of urls) {
-              try {
-                await new Promise((res, rej) => {
-                  const s = document.createElement('script'); s.src = u; s.async = true;
-                  s.onload = () => res(); s.onerror = rej; document.head.appendChild(s);
-                });
-                window._dtiReady = true; return;
-              } catch (e) {}
-            }
-            throw new Error('Failed to load dom-to-image-more');
-          }
-          await loadScriptOnce(__DTI_URLS__);
-
-          function isTransparent(c) {
-            if (!c) return true;
-            return c === 'transparent' || c.startsWith('rgba(0, 0, 0, 0)');
-          }
-          const tlBg  = getComputedStyle(tl).backgroundColor;
-          const bodyBg= getComputedStyle(document.body).backgroundColor;
-          const bgcolor = isTransparent(tlBg) ? bodyBg : tlBg;
-
-          const ts = new Date().toISOString().replaceAll(':','-').slice(0,19);
-          const filename = 'timeline_' + ts + '.png';
-
-          try {
-            const dataUrl = await window.domtoimage.toPng(tl, { bgcolor, cacheBust:true });
-            const a = document.createElement('a');
-            a.href = dataUrl; a.download = filename;
-            document.body.appendChild(a); a.click(); a.remove();
-          } catch (err) {
-            console.error('PNG export failed', err);
-            alert('PNG export failed. See console for details.');
-          }
-        }
-      })();
-    </script>
-  </body>
-</html>
-    """
-
-    html = (
-        html_template
-        .replace("__HEIGHT__", str(height_px))
-        .replace("__ITEMS__", items_json)
-        .replace("__GROUPS__", groups_json)
-        .replace("__EXPORT__", export_json)
-        .replace("__CSS_URLS_JSON__", css_urls)
-        .replace("__JS_URLS_JSON__", js_urls)
-        .replace("__DTI_URLS_JSON__", dti_urls)
-    )
-    components.html(html, height=height_px + 20, scrolling=False)
+              content
