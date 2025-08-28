@@ -105,7 +105,8 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       const __JS_URLS__  = __JS_URLS_JSON__;
       const __DTI_URLS__ = __DTI_URLS_JSON__;
 
-      const __TL_DATA__ = {
+      // IMPORTANT: put data on window so later code can read window.__TL_DATA__
+      window.__TL_DATA__ = {
         ITEMS: __ITEMS__,
         GROUPS: __GROUPS__,
         EXPORT: __EXPORT__,
@@ -180,7 +181,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
               content: '<div class="ttl">' + (it.content || '') + '</div><div class="sub">' + (it.subtitle || '') + '</div>',
               start: it.start, end: it.end, style: it.style
             };
-            obj.group = (it.group && String(it.group).trim()) ? it.group : "_ungrouped";
+            obj.group = (it.group and String(it.group).trim()) ? it.group : "_ungrouped";
             return obj;
           }));
 
