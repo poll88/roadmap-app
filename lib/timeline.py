@@ -1,4 +1,5 @@
-# lib/timeline.py — robust vis loader, Montserrat, ungrouped items, tl.fit(), one-to-one PNG export
+# lib/timeline.py — robust vis loader + on-page debug panel + ungrouped fallback group
+# Montserrat font, tl.fit(), and one-to-one PNG export (no preview window)
 
 import json
 from datetime import date, datetime, timedelta
@@ -32,7 +33,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             "content": i.get("content"),
             "start": _dt(i.get("start")),
             "end": _dt(i.get("end")),
-            "group": i.get("group"),          # JS will omit if falsy
+            "group": i.get("group"),          # may be "", None, or real id
             "style": i.get("style"),
             "subtitle": i.get("subtitle", ""),
         } for i in items
@@ -79,11 +80,25 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       .vis-item .vis-item-content {{ line-height:1.15 }}
       .ttl {{ font-weight:700 }}
       .sub {{ font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }}
+
+      /* Debug panel */
+      #dbg {{
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px; line-height: 1.35;
+        background: #0b102016; color: #0b1020;
+        border: 1px dashed #c7ccda; border-radius: 8px;
+        padding: 10px; margin-top: 10px; white-space: pre-wrap;
+      }}
+      #dbg b {{ color:#111; }}
     </style>
   </head>
   <body>
     <div id="wrap">
       <div id="timeline"></div>
+      <details open style="margin-top:8px">
+        <summary>Debug</summary>
+        <div id="dbg">Booting…</div>
+      </details>
     </div>
 
     <script>
@@ -101,9 +116,13 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 
       (function() {{
         const D = window.__TL_DATA__;
+        const dbg = (msg) => {{
+          const el = document.getElementById('dbg');
+          if (el) el.textContent = String(msg);
+          console.log('[timeline]', msg);
+        }};
 
         function loadCSSOnce(urls) {{
-          // load first one that works; resolve even if onerror (CSS failure won't block JS)
           return Promise.all(urls.map(url => new Promise((resolve) => {{
             const link = document.createElement('link');
             link.rel = 'stylesheet'; link.href = url;
@@ -131,26 +150,42 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
 
         function layout() {{
           const el = document.getElementById('timeline');
-          if (!el || !window.vis) {{
-            console.error('vis-timeline not available');
+
+          const itemsIn = Array.isArray(D.ITEMS) ? D.ITEMS : [];
+          const groupsIn = Array.isArray(D.GROUPS) ? D.GROUPS : [];
+
+          // ---- Debug data echo
+          dbg([
+            'vis loaded? ' + !!window.vis,
+            'items: ' + itemsIn.length,
+            itemsIn.length ? 'first item: ' + JSON.stringify(itemsIn[0], null, 2) : 'first item: (none)',
+            'groups: ' + groupsIn.length,
+            groupsIn.length ? ('group ids: ' + groupsIn.map(g=>g.id).join(', ')) : '(no groups)',
+          ].join('\\n'));
+
+          if (!el) return;
+          if (!window.vis) {{
             el.innerHTML = '<div style="padding:16px;color:#999">Failed to load timeline library.</div>';
             return;
           }}
 
-          const items = new vis.DataSet((D.ITEMS || []).map(it => {{
+          // Guarantee a valid group for every item: if item has no group, route to "_ungrouped"
+          const NEED_UNGROUPED = itemsIn.some(it => !it.group) || groupsIn.length === 0;
+          const groupsAll = NEED_UNGROUPED
+            ? [{{ id: "_ungrouped", content: "Ungrouped" }}, ...groupsIn]
+            : groupsIn;
+
+          const items = new vis.DataSet(itemsIn.map(it => {{
             const obj = {{
               id: it.id,
               content: `<div class="ttl">${{it.content||''}}</div><div class="sub">${{it.subtitle||''}}</div>`,
               start: it.start, end: it.end, style: it.style
             }};
-            if (it.group) obj.group = it.group; // omit empty -> ungrouped
+            obj.group = it.group && String(it.group).trim() ? it.group : "_ungrouped";
             return obj;
           }})));
 
-          const hasGroups = Array.isArray(D.GROUPS) && D.GROUPS.length > 0;
-          const groups = hasGroups ? new vis.DataSet((D.GROUPS || []).map(g => ({{
-            id: g.id, content: g.content
-          }}))) : null;
+          const groups = new vis.DataSet(groupsAll.map(g => ({{ id: g.id, content: g.content }})));
 
           const options = {{
             stack: false,
@@ -167,12 +202,21 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             margin: {{ item: 8, axis: 12 }},
           }};
 
-          const tl = hasGroups
-            ? new vis.Timeline(el, items, groups, options)
-            : new vis.Timeline(el, items, options);
-          window._tl = tl;
+          let tl;
+          try {{
+            tl = new vis.Timeline(el, items, groups, options);
+            window._tl = tl;
+          }} catch (e) {{
+            dbg('Timeline ctor error: ' + (e && e.message ? e.message : e));
+            el.innerHTML = '<div style="padding:16px;color:#c00">Timeline init error. See console.</div>';
+            return;
+          }
 
-          try {{ if ((D.ITEMS || []).length) tl.fit(); }} catch (e) {{}}
+          try {{
+            if (items.length) tl.fit();
+          }} catch (e) {{
+            dbg('fit() error: ' + (e && e.message ? e.message : e));
+          }
         }}
 
         function init() {{
@@ -181,12 +225,14 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             .then(() => {{
               layout();
               const EX = (D.EXPORT || null);
-              if (EX && EX.kind === 'png') setTimeout(() => exportPNG(EX), 50);
+              if (EX && EX.kind === 'png') setTimeout(() => exportPNG(EX), 80);
             }})
             .catch((e) => {{
-              console.error(e);
               const el = document.getElementById('timeline');
               if (el) el.innerHTML = '<div style="padding:16px;color:#999">Timeline failed to load.</div>';
+              const msg = (e && e.message) ? e.message : String(e);
+              const d = document.getElementById('dbg'); if (d) d.textContent = 'Loader error: ' + msg;
+              console.error(e);
             }});
         }}
 
@@ -250,4 +296,4 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
         .replace("__JS_URLS__", js_urls)
         .replace("__DTI_URLS__", dti_urls)
     )
-    components.html(html, height=height_px + 20, scrolling=False)
+    components.html(html, height=height_px + 120, scrolling=False)  # +extra for debug panel
