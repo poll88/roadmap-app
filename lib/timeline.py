@@ -105,7 +105,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
       const __JS_URLS__  = __JS_URLS_JSON__;
       const __DTI_URLS__ = __DTI_URLS_JSON__;
 
-      // IMPORTANT: put data on window so later code can read window.__TL_DATA__
+      // Put data on window so later code can read it.
       window.__TL_DATA__ = {
         ITEMS: __ITEMS__,
         GROUPS: __GROUPS__,
@@ -154,7 +154,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
           const itemsIn = Array.isArray(D.ITEMS) ? D.ITEMS : [];
           const groupsIn = Array.isArray(D.GROUPS) ? D.GROUPS : [];
 
-          // ---- Debug data echo
+          // Debug snapshot
           dbg([
             'vis loaded? ' + !!window.vis,
             'items: ' + itemsIn.length,
@@ -169,7 +169,7 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
             return;
           }
 
-          // Guarantee a valid group for every item: if item has no group, route to "_ungrouped"
+          // Ensure every item has a valid group (fallback to "_ungrouped")
           const NEED_UNGROUPED = itemsIn.some(it => !it.group) || groupsIn.length === 0;
           const groupsAll = NEED_UNGROUPED
             ? [{ id: "_ungrouped", content: "Ungrouped" }].concat(groupsIn)
@@ -181,7 +181,8 @@ def render_timeline(items: list, groups: list, selected_id: str = "", export=Non
               content: '<div class="ttl">' + (it.content || '') + '</div><div class="sub">' + (it.subtitle || '') + '</div>',
               start: it.start, end: it.end, style: it.style
             };
-            obj.group = (it.group and String(it.group).trim()) ? it.group : "_ungrouped";
+            // ✅ FIX: use JS '&&' (not Python 'and')
+            obj.group = (it.group && String(it.group).trim()) ? it.group : "_ungrouped";
             return obj;
           }));
 
