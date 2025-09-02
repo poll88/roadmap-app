@@ -1,6 +1,7 @@
-# app.py — fix StreamlitAPIException by deferring selection changes via _goto_item_id.
-# Also keeps: robust import, Save that truly updates, unified Category, PNG bg toggle,
-# Montserrat export, and Debug expander.
+# app.py — fix StreamlitAPIException by removing widget-key for the picker.
+# We now drive default selection via index + _goto_item_id.
+# Keeps: robust import, Save that truly updates, unified Category, PNG bg toggle,
+# Montserrat export, Debug expander, and "prefill only when selection changes".
 
 import uuid
 import hashlib
@@ -30,10 +31,10 @@ ss.setdefault("_last_import_hash", "")
 ss.setdefault("_export_exact", None)
 ss.setdefault("png_include_bg", True)
 
-# UI state
-ss.setdefault("selected_item_id", "(none)")    # actual picker value
-ss.setdefault("_last_prefill_from", "(none)")  # track when to prefill
-ss.setdefault("_goto_item_id", None)           # <-- NEW: pending programmatic selection
+# app state (not widget keys)
+ss.setdefault("selected_item_id", "(none)")   # current selection we persist ourselves
+ss.setdefault("_last_prefill_from", "(none)") # to avoid overwriting edits
+ss.setdefault("_goto_item_id", None)          # pending programmatic selection
 
 # ---------- Colors ----------
 PALETTE_MAP = {
@@ -132,7 +133,7 @@ def _build_item_dict(item_id: str) -> dict:
         "style": f"background:{col_hex}; border-color:{col_hex}",
     })
 
-# ---------- Smart JSON importer (same as previous) ----------
+# ---------- Smart JSON importer (same as before) ----------
 def smart_import(text: str):
     doc = json.loads(text)
 
@@ -237,7 +238,7 @@ with st.sidebar:
             if items_in:
                 ss["items"] = items_in
                 ss["groups"] = groups_in
-                ss["_goto_item_id"] = "(none)"         # defer selection reset
+                ss["_goto_item_id"] = "(none)"       # defer selection reset
                 ss["_last_prefill_from"] = "(none)"
                 st.success(f"Imported {len(items_in)} items, {len(groups_in)} groups.")
                 st.rerun()
@@ -267,37 +268,36 @@ with st.sidebar:
 groups_by_id = {g.get("id"): g.get("content", "") for g in ss["groups"]}
 _normalize_form_defaults()
 
-# Build items map BEFORE the picker, so we can apply any pending selection
+# Build items map BEFORE rendering the picker
 item_by_id = {str(it.get("id")): it for it in ss["items"]}
-
-# Apply pending selection (fixes StreamlitAPIException)
-if ss.get("_goto_item_id") is not None:
-    pending = ss["_goto_item_id"]
-    # Only apply if pending is valid or "(none)"
-    if pending == "(none)" or pending in item_by_id:
-        ss["selected_item_id"] = pending
-        ss["_last_prefill_from"] = pending
-    ss["_goto_item_id"] = None  # clear
-
-# ---- Picker bound directly to ids ----
 picker_options = ["(none)"] + list(item_by_id.keys())
-if ss["selected_item_id"] not in picker_options:
-    ss["selected_item_id"] = "(none)"
 
+# Determine which value to show in the picker this run (no widget key!)
+proposed = ss.get("_goto_item_id")
+if proposed is None:
+    proposed = ss.get("selected_item_id", "(none)")
+if proposed not in picker_options:
+    proposed = "(none)"
+# Clear pending goto after consuming
+ss["_goto_item_id"] = None
+
+default_index = picker_options.index(proposed)
 selected_id = st.selectbox(
     "Select item to edit",
     options=picker_options,
-    key="selected_item_id",
+    index=default_index,
     format_func=lambda v: "(none)" if v == "(none)" else _label_for_item(item_by_id[v], groups_by_id),
 )
+# Persist the selection ourselves (not a widget key)
+ss["selected_item_id"] = selected_id
 
-# Only prefill when selection actually changes
+# Only prefill when the selection actually changes
 if selected_id != ss.get("_last_prefill_from"):
     if selected_id != "(none)":
         _prefill_form_from_item(item_by_id[selected_id], groups_by_id)
     ss["_last_prefill_from"] = selected_id
 
-# ---- Form (tab order: Title → Subtitle → Category → Start → End → Color) ----
+# ---- Form (tab order) ----
 with st.form("item_form", clear_on_submit=False):
     c1, c2 = st.columns([2, 2])
     with c1:
@@ -327,7 +327,7 @@ with st.form("item_form", clear_on_submit=False):
 def _add_and_goto():
     new_id = str(uuid.uuid4())
     ss["items"].append(_build_item_dict(new_id))
-    ss["_goto_item_id"] = new_id   # defer selectbox change to next run
+    ss["_goto_item_id"] = new_id   # will be applied next run via index
     st.success("Item added.")
     st.rerun()
 
@@ -343,7 +343,6 @@ def _save_selected():
         st.success("Item updated.")
         st.rerun()
     else:
-        # If not found (rare), create it and select it
         ss["items"].append(_build_item_dict(target))
         ss["_goto_item_id"] = target
         st.info("Selected item not found; created it.")
@@ -372,7 +371,7 @@ if btn_del:
     else:
         tgt = ss["selected_item_id"]
         ss["items"] = [it for it in ss["items"] if str(it.get("id")) != tgt]
-        ss["_goto_item_id"] = "(none)"   # defer resetting selection
+        ss["_goto_item_id"] = "(none)"
         st.success("Item deleted.")
         st.rerun()
 
