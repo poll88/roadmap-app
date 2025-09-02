@@ -1,5 +1,6 @@
-# app.py — fixes Save by only pre-filling when selection changes,
-# robust import, unified Category, multi-item add, PNG bg toggle, Debug expander
+# app.py — fix StreamlitAPIException by deferring selection changes via _goto_item_id.
+# Also keeps: robust import, Save that truly updates, unified Category, PNG bg toggle,
+# Montserrat export, and Debug expander.
 
 import uuid
 import hashlib
@@ -28,8 +29,11 @@ ss.setdefault("groups", [])
 ss.setdefault("_last_import_hash", "")
 ss.setdefault("_export_exact", None)
 ss.setdefault("png_include_bg", True)
-ss.setdefault("selected_item_id", "(none)")   # bound to the picker
-ss.setdefault("_last_prefill_from", "(none)") # <-- NEW: only prefill when selection changes
+
+# UI state
+ss.setdefault("selected_item_id", "(none)")    # actual picker value
+ss.setdefault("_last_prefill_from", "(none)")  # track when to prefill
+ss.setdefault("_goto_item_id", None)           # <-- NEW: pending programmatic selection
 
 # ---------- Colors ----------
 PALETTE_MAP = {
@@ -57,7 +61,6 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
     ss["form_category_name"] = groups_by_id.get(it.get("group", ""), "")
     ss["form_start"] = _date_from_any(it.get("start")) or date.today()
     ss["form_end"]   = _date_from_any(it.get("end"))   or ss["form_start"]
-    # color label from hex if it matches our palette
     cur_color = it.get("color")
     for label, hexv in PALETTE_MAP.items():
         if hexv == cur_color:
@@ -65,7 +68,6 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
             break
 
 def _ensure_group_id_from_name(name_text: str) -> str:
-    """Case-insensitive match; create new if not found; empty -> ungrouped."""
     name = (name_text or "").strip()
     if not name:
         return ""
@@ -84,7 +86,6 @@ def _label_for_item(it, groups_by_id):
     return f"{title} · {gname} · {start} · {short}"
 
 def _date_from_any(v):
-    """Coerce many date formats into a date(). Accepts date, datetime, or string."""
     if v is None or v == "":
         return None
     if isinstance(v, date) and not isinstance(v, datetime):
@@ -131,7 +132,7 @@ def _build_item_dict(item_id: str) -> dict:
         "style": f"background:{col_hex}; border-color:{col_hex}",
     })
 
-# ---------- Smart JSON importer ----------
+# ---------- Smart JSON importer (same as previous) ----------
 def smart_import(text: str):
     doc = json.loads(text)
 
@@ -167,9 +168,7 @@ def smart_import(text: str):
     if not isinstance(items_in, list):
         return [], []
 
-    groups_norm = []
-    items_norm  = []
-    name_to_id = {}
+    groups_norm, items_norm, name_to_id = [], [], {}
 
     if isinstance(groups_in, list):
         for idx, g in enumerate(groups_in):
@@ -228,25 +227,24 @@ st.title("🗺️ Product Roadmap")
 # Sidebar: Import / Export / Reset
 with st.sidebar:
     st.header("Data")
-
     uploaded = st.file_uploader("Import JSON", type=["json"])
     if uploaded is not None:
         text = uploaded.read().decode("utf-8", errors="replace")
         h = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if h != ss.get("_last_import_hash", ""):
             ss["_last_import_hash"] = h
-            imported_items, imported_groups = smart_import(text)
-            if imported_items:
-                ss["items"]  = imported_items
-                ss["groups"] = imported_groups
-                ss["selected_item_id"] = "(none)"
-                ss["_last_prefill_from"] = "(none)"   # reset prefill marker
-                st.success(f"Imported {len(imported_items)} items, {len(imported_groups)} groups.")
+            items_in, groups_in = smart_import(text)
+            if items_in:
+                ss["items"] = items_in
+                ss["groups"] = groups_in
+                ss["_goto_item_id"] = "(none)"         # defer selection reset
+                ss["_last_prefill_from"] = "(none)"
+                st.success(f"Imported {len(items_in)} items, {len(groups_in)} groups.")
                 st.rerun()
             else:
                 try:
                     normalize_state(ss, text)
-                    ss["selected_item_id"] = "(none)"
+                    ss["_goto_item_id"] = "(none)"
                     ss["_last_prefill_from"] = "(none)"
                     st.success("Imported using legacy normalizer.")
                     st.rerun()
@@ -261,16 +259,27 @@ with st.sidebar:
         keep_bg = ss.get("png_include_bg", True)
         reset_defaults(ss)
         ss["png_include_bg"] = keep_bg
-        ss["selected_item_id"] = "(none)"
+        ss["_goto_item_id"] = "(none)"
         ss["_last_prefill_from"] = "(none)"
         st.rerun()
 
-# Lookups and form defaults
+# Lookups and defaults
 groups_by_id = {g.get("id"): g.get("content", "") for g in ss["groups"]}
 _normalize_form_defaults()
 
-# ---- Picker bound directly to ids ----
+# Build items map BEFORE the picker, so we can apply any pending selection
 item_by_id = {str(it.get("id")): it for it in ss["items"]}
+
+# Apply pending selection (fixes StreamlitAPIException)
+if ss.get("_goto_item_id") is not None:
+    pending = ss["_goto_item_id"]
+    # Only apply if pending is valid or "(none)"
+    if pending == "(none)" or pending in item_by_id:
+        ss["selected_item_id"] = pending
+        ss["_last_prefill_from"] = pending
+    ss["_goto_item_id"] = None  # clear
+
+# ---- Picker bound directly to ids ----
 picker_options = ["(none)"] + list(item_by_id.keys())
 if ss["selected_item_id"] not in picker_options:
     ss["selected_item_id"] = "(none)"
@@ -282,7 +291,7 @@ selected_id = st.selectbox(
     format_func=lambda v: "(none)" if v == "(none)" else _label_for_item(item_by_id[v], groups_by_id),
 )
 
-# ✅ Only prefill when the selection actually changes
+# Only prefill when selection actually changes
 if selected_id != ss.get("_last_prefill_from"):
     if selected_id != "(none)":
         _prefill_form_from_item(item_by_id[selected_id], groups_by_id)
@@ -315,18 +324,37 @@ with st.form("item_form", clear_on_submit=False):
     with b3: btn_del  = st.form_submit_button("Delete",     type="secondary",use_container_width=True)
 
 # ---- Actions ----
+def _add_and_goto():
+    new_id = str(uuid.uuid4())
+    ss["items"].append(_build_item_dict(new_id))
+    ss["_goto_item_id"] = new_id   # defer selectbox change to next run
+    st.success("Item added.")
+    st.rerun()
+
+def _save_selected():
+    target = ss["selected_item_id"]
+    updated = False
+    for i, it in enumerate(ss["items"]):
+        if str(it.get("id")) == target:
+            ss["items"][i] = _build_item_dict(target)
+            updated = True
+            break
+    if updated:
+        st.success("Item updated.")
+        st.rerun()
+    else:
+        # If not found (rare), create it and select it
+        ss["items"].append(_build_item_dict(target))
+        ss["_goto_item_id"] = target
+        st.info("Selected item not found; created it.")
+        st.rerun()
+
 if btn_add:
     title = (ss["form_title"] or "").strip()
     if not title:
         st.warning("Title is required.")
     else:
-        new_id = str(uuid.uuid4())
-        ss["items"].append(_build_item_dict(new_id))
-        # Auto-select new item and set prefill marker to that id
-        ss["selected_item_id"] = new_id
-        ss["_last_prefill_from"] = new_id
-        st.success("Item added.")
-        st.rerun()
+        _add_and_goto()
 
 if btn_save:
     title = (ss["form_title"] or "").strip()
@@ -334,30 +362,9 @@ if btn_save:
         st.warning("Title is required.")
     else:
         if ss["selected_item_id"] == "(none)":
-            # Save behaves like create when nothing selected
-            new_id = str(uuid.uuid4())
-            ss["items"].append(_build_item_dict(new_id))
-            ss["selected_item_id"] = new_id
-            ss["_last_prefill_from"] = new_id
-            st.success("Item saved (new).")
-            st.rerun()
+            _add_and_goto()
         else:
-            target = ss["selected_item_id"]
-            updated = False
-            for i, it in enumerate(ss["items"]):
-                if str(it.get("id")) == target:
-                    ss["items"][i] = _build_item_dict(target)
-                    updated = True
-                    break
-            if updated:
-                # Keep selection; do NOT prefill on next run (so user edits persist)
-                st.success("Item updated.")
-                st.rerun()
-            else:
-                ss["items"].append(_build_item_dict(target))
-                ss["_last_prefill_from"] = target
-                st.info("Selected item not found; created it.")
-                st.rerun()
+            _save_selected()
 
 if btn_del:
     if ss["selected_item_id"] == "(none)":
@@ -365,8 +372,7 @@ if btn_del:
     else:
         tgt = ss["selected_item_id"]
         ss["items"] = [it for it in ss["items"] if str(it.get("id")) != tgt]
-        ss["selected_item_id"] = "(none)"
-        ss["_last_prefill_from"] = "(none)"
+        ss["_goto_item_id"] = "(none)"   # defer resetting selection
         st.success("Item deleted.")
         st.rerun()
 
@@ -402,6 +408,7 @@ with st.expander("Debug"):
         "groups_count": len(ss["groups"]),
         "selected_item_id": ss.get("selected_item_id"),
         "_last_prefill_from": ss.get("_last_prefill_from"),
+        "_goto_item_id": ss.get("_goto_item_id"),
         "first_item": ss["items"][0] if ss["items"] else None,
         "first_group": ss["groups"][0] if ss["groups"] else None,
     })
