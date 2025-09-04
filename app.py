@@ -1,7 +1,11 @@
-# app.py — fix StreamlitAPIException by removing widget-key for the picker.
-# We now drive default selection via index + _goto_item_id.
-# Keeps: robust import, Save that truly updates, unified Category, PNG bg toggle,
-# Montserrat export, Debug expander, and "prefill only when selection changes".
+# app.py — latest full version
+# - Always-stacked timeline (clean separate lanes per category)
+# - Drag on the timeline (handled in lib/timeline) + PNG export options
+# - Auto-growing height based on overlaps
+# - Save/Add/Delete with stable selection (no widget-key conflicts)
+# - Robust JSON import (many schemas), unified Category input
+# - Montserrat font in PNG (handled in lib/timeline), background include toggle
+# - Debug expander
 
 import uuid
 import hashlib
@@ -17,7 +21,7 @@ from lib.state import (
 )
 from lib.timeline import render_timeline
 
-# ---------- Setup ----------
+# ---------- Page & logging ----------
 st.set_page_config(page_title="Roadmap", page_icon="🗺️", layout="wide")
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -31,12 +35,12 @@ ss.setdefault("_last_import_hash", "")
 ss.setdefault("_export_exact", None)
 ss.setdefault("png_include_bg", True)
 
-# app state (not widget keys)
+# App state (NOT widget keys)
 ss.setdefault("selected_item_id", "(none)")   # current selection we persist ourselves
-ss.setdefault("_last_prefill_from", "(none)") # to avoid overwriting edits
-ss.setdefault("_goto_item_id", None)          # pending programmatic selection
+ss.setdefault("_last_prefill_from", "(none)") # to avoid overwriting user edits
+ss.setdefault("_goto_item_id", None)          # pending programmatic selection for picker
 
-# ---------- Colors ----------
+# ---------- Palette ----------
 PALETTE_MAP = {
     "Blue":   "#3B82F6",
     "Green":  "#10B981",
@@ -46,6 +50,16 @@ PALETTE_MAP = {
     "Slate":  "#64748B",
 }
 PALETTE_OPTIONS = list(PALETTE_MAP.keys())
+
+# Color order so Green sits near Blue
+COLOR_RANK = {
+    "#3B82F6": 10,  # Blue
+    "#10B981": 11,  # Green
+    "#F59E0B": 12,  # Amber
+    "#8B5CF6": 13,  # Purple
+    "#F43F5E": 14,  # Rose
+    "#64748B": 15,  # Slate
+}
 
 # ---------- Helpers ----------
 def _normalize_form_defaults():
@@ -69,6 +83,7 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
             break
 
 def _ensure_group_id_from_name(name_text: str) -> str:
+    """Match existing group name case-insensitively; create if missing; empty -> ungrouped."""
     name = (name_text or "").strip()
     if not name:
         return ""
@@ -87,6 +102,7 @@ def _label_for_item(it, groups_by_id):
     return f"{title} · {gname} · {start} · {short}"
 
 def _date_from_any(v):
+    """Coerce many date formats into a date(). Accepts date, datetime, or string."""
     if v is None or v == "":
         return None
     if isinstance(v, date) and not isinstance(v, datetime):
@@ -128,13 +144,71 @@ def _build_item_dict(item_id: str) -> dict:
         "subtitle": ss["form_subtitle"],
         "start": start,
         "end":   end,
-        "group": gid,
+        "group": gid,  # empty => Ungrouped lane (renderer handles it)
         "color": col_hex,
         "style": f"background:{col_hex}; border-color:{col_hex}",
     })
 
-# ---------- Smart JSON importer (same as before) ----------
+# ---- Auto-height utilities (grows with stacked overlaps) ----
+def _as_datetime(d):
+    if isinstance(d, datetime):
+        return d
+    if isinstance(d, date):
+        return datetime(d.year, d.month, d.day)
+    if isinstance(d, str):
+        s = d.strip()
+        try:
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+    return None
+
+def _max_overlap(intervals):
+    # Sweep line to find max simultaneous intervals
+    events = []
+    for s, e in intervals:
+        if s is None:
+            continue
+        if e is None:
+            e = s
+        events.append((s, +1))
+        events.append((e, -1))
+    events.sort()
+    cur = 0
+    mx = 0
+    for _, d in events:
+        cur += d
+        mx = max(mx, cur)
+    return max(1, mx) if events else 1
+
+def compute_auto_height(items, groups, stack=True):
+    group_ids = [g.get("id") for g in groups] or ["_ungrouped"]
+    per_lane = 80   # px per lane
+    top_pad  = 120  # px for labels/axis
+    total_lanes = 0
+    for gid in group_ids:
+        if not stack:
+            total_lanes += 1
+            continue
+        ivs = []
+        for it in items:
+            g = it.get("group") or "_ungrouped"
+            if g == gid:
+                s = _as_datetime(it.get("start"))
+                e = _as_datetime(it.get("end") or it.get("start"))
+                ivs.append((s, e))
+        total_lanes += _max_overlap(ivs)
+    return max(260, top_pad + per_lane * total_lanes)
+
+# ---------- Smart JSON importer ----------
 def smart_import(text: str):
+    """
+    Accepts common shapes:
+      {items:[...], groups:[...]} or nested {data:{...}}, or case variants.
+      If no groups are provided, groups are synthesized from item.category/groupName.
+    """
     doc = json.loads(text)
 
     def _get_case_insensitive(d: dict, key: str):
@@ -228,6 +302,7 @@ st.title("🗺️ Product Roadmap")
 # Sidebar: Import / Export / Reset
 with st.sidebar:
     st.header("Data")
+
     uploaded = st.file_uploader("Import JSON", type=["json"])
     if uploaded is not None:
         text = uploaded.read().decode("utf-8", errors="replace")
@@ -238,7 +313,7 @@ with st.sidebar:
             if items_in:
                 ss["items"] = items_in
                 ss["groups"] = groups_in
-                ss["_goto_item_id"] = "(none)"       # defer selection reset
+                ss["_goto_item_id"] = "(none)"         # defer selection reset
                 ss["_last_prefill_from"] = "(none)"
                 st.success(f"Imported {len(items_in)} items, {len(groups_in)} groups.")
                 st.rerun()
@@ -264,7 +339,7 @@ with st.sidebar:
         ss["_last_prefill_from"] = "(none)"
         st.rerun()
 
-# Lookups and defaults
+# Lookups & defaults
 groups_by_id = {g.get("id"): g.get("content", "") for g in ss["groups"]}
 _normalize_form_defaults()
 
@@ -272,14 +347,13 @@ _normalize_form_defaults()
 item_by_id = {str(it.get("id")): it for it in ss["items"]}
 picker_options = ["(none)"] + list(item_by_id.keys())
 
-# Determine which value to show in the picker this run (no widget key!)
+# Determine value to show in the picker this run (no widget key → we control selection)
 proposed = ss.get("_goto_item_id")
 if proposed is None:
     proposed = ss.get("selected_item_id", "(none)")
 if proposed not in picker_options:
     proposed = "(none)"
-# Clear pending goto after consuming
-ss["_goto_item_id"] = None
+ss["_goto_item_id"] = None  # consume pending
 
 default_index = picker_options.index(proposed)
 selected_id = st.selectbox(
@@ -288,16 +362,15 @@ selected_id = st.selectbox(
     index=default_index,
     format_func=lambda v: "(none)" if v == "(none)" else _label_for_item(item_by_id[v], groups_by_id),
 )
-# Persist the selection ourselves (not a widget key)
 ss["selected_item_id"] = selected_id
 
-# Only prefill when the selection actually changes
+# Prefill only when selection actually changes (prevents overwriting your in-form edits)
 if selected_id != ss.get("_last_prefill_from"):
     if selected_id != "(none)":
         _prefill_form_from_item(item_by_id[selected_id], groups_by_id)
     ss["_last_prefill_from"] = selected_id
 
-# ---- Form (tab order) ----
+# ---- Edit/Add form (tab order: Title → Subtitle → Category → Start → End → Color) ----
 with st.form("item_form", clear_on_submit=False):
     c1, c2 = st.columns([2, 2])
     with c1:
@@ -319,15 +392,18 @@ with st.form("item_form", clear_on_submit=False):
         st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
 
     b1, b2, b3 = st.columns(3)
-    with b1: btn_add  = st.form_submit_button("Add new",   type="primary",  use_container_width=True)
-    with b2: btn_save = st.form_submit_button("Save changes",               use_container_width=True)
-    with b3: btn_del  = st.form_submit_button("Delete",     type="secondary",use_container_width=True)
+    with b1:
+        btn_add = st.form_submit_button("Add new", type="primary", use_container_width=True)
+    with b2:
+        btn_save = st.form_submit_button("Save changes", use_container_width=True)
+    with b3:
+        btn_del = st.form_submit_button("Delete", type="secondary", use_container_width=True)
 
 # ---- Actions ----
 def _add_and_goto():
     new_id = str(uuid.uuid4())
     ss["items"].append(_build_item_dict(new_id))
-    ss["_goto_item_id"] = new_id   # will be applied next run via index
+    ss["_goto_item_id"] = new_id  # will be applied via index next run
     st.success("Item added.")
     st.rerun()
 
@@ -388,15 +464,32 @@ if st.button("Download PNG", use_container_width=True):
     }
     st.toast("Exporting PNG…", icon="🖼️")
 
-# ---- Filters & Timeline ----
+# ---- View options & Timeline ----
 st.subheader("📂 View options")
 names = st.multiselect("Filter categories", [g["content"] for g in ss["groups"]], key="filter_categories")
 ids = {g["id"] for g in ss["groups"] if g["content"] in names} if names else set()
 items_view  = [i for i in ss["items"]  if not ids or i.get("group", "") in ids]
 groups_view = [g for g in ss["groups"] if not ids or g["id"] in ids]
 
+# Enrich items with orderKey so Green is near Blue, then by start date
+enriched = []
+for i in items_view:
+    j = dict(i)
+    j["orderKey"] = COLOR_RANK.get(j.get("color", ""), 99)
+    enriched.append(j)
+
+# Auto height that grows with overlaps (stack=True always)
+height_px = compute_auto_height(enriched, groups_view, stack=True)
+
 export_req = ss.get("_export_exact")
-render_timeline(items_view, groups_view, selected_id=ss.get("selected_item_id", ""), export=export_req)
+render_timeline(
+    enriched,
+    groups_view,
+    selected_id=ss.get("selected_item_id", ""),
+    export=export_req,
+    stack=True,               # always stacked
+    height_px=height_px
+)
 if export_req is not None:
     ss["_export_exact"] = None
 
@@ -408,6 +501,7 @@ with st.expander("Debug"):
         "selected_item_id": ss.get("selected_item_id"),
         "_last_prefill_from": ss.get("_last_prefill_from"),
         "_goto_item_id": ss.get("_goto_item_id"),
+        "auto_height_px": height_px,
         "first_item": ss["items"][0] if ss["items"] else None,
         "first_group": ss["groups"][0] if ss["groups"] else None,
     })
