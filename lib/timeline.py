@@ -84,10 +84,11 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
   </style>
 </head>
 <body>
-  <div id="wrap">
-    <div class="hint">Drag to move · Drag up/down to change row</div>
-    <div id="timeline"></div>
-  </div>
+    <div id="wrap">
+      <!-- <div class="hint">Drag to move · Drag up/down to change row</div> -->
+      <div id="timeline"></div>
+    </div>
+
 
   <script>
     const CSS_URLS = __CSS_URLS__;
