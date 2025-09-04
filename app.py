@@ -1,11 +1,6 @@
-# app.py — latest full version
-# - Always-stacked timeline (clean separate lanes per category)
-# - Drag on the timeline (handled in lib/timeline) + PNG export options
-# - Auto-growing height based on overlaps
-# - Save/Add/Delete with stable selection (no widget-key conflicts)
-# - Robust JSON import (many schemas), unified Category input
-# - Montserrat font in PNG (handled in lib/timeline), background include toggle
-# - Debug expander
+# app.py — open-ended items (no start / no end) + lighter colors + dashed for open ends
+# Always-stacked timeline with drag/drop, auto height, PNG export in Montserrat,
+# Save/Add/Delete, robust import, unified Category input.
 
 import uuid
 import hashlib
@@ -36,9 +31,9 @@ ss.setdefault("_export_exact", None)
 ss.setdefault("png_include_bg", True)
 
 # App state (NOT widget keys)
-ss.setdefault("selected_item_id", "(none)")   # current selection we persist ourselves
-ss.setdefault("_last_prefill_from", "(none)") # to avoid overwriting user edits
-ss.setdefault("_goto_item_id", None)          # pending programmatic selection for picker
+ss.setdefault("selected_item_id", "(none)")
+ss.setdefault("_last_prefill_from", "(none)")
+ss.setdefault("_goto_item_id", None)
 
 # ---------- Palette ----------
 PALETTE_MAP = {
@@ -61,11 +56,17 @@ COLOR_RANK = {
     "#64748B": 15,  # Slate
 }
 
+# Sentinels used for open start / open end so timeline can render ranges
+OPEN_START_SENTINEL = date(1970, 1, 1)
+OPEN_END_SENTINEL   = date(2100, 1, 1)
+
 # ---------- Helpers ----------
 def _normalize_form_defaults():
     ss.setdefault("form_title", "")
     ss.setdefault("form_subtitle", "")
     ss.setdefault("form_category_name", "")
+    ss.setdefault("form_no_start", False)
+    ss.setdefault("form_no_end", False)
     ss.setdefault("form_start", date.today())
     ss.setdefault("form_end", date.today())
     ss.setdefault("form_color_label", PALETTE_OPTIONS[0])
@@ -74,6 +75,9 @@ def _prefill_form_from_item(it: dict, groups_by_id: dict):
     ss["form_title"] = it.get("content", "")
     ss["form_subtitle"] = it.get("subtitle", "")
     ss["form_category_name"] = groups_by_id.get(it.get("group", ""), "")
+    ss["form_no_start"] = bool(it.get("openStart", False))
+    ss["form_no_end"]   = bool(it.get("openEnd", False))
+    # Show dates even if open to give user context; inputs are disabled when 'no_*' is true
     ss["form_start"] = _date_from_any(it.get("start")) or date.today()
     ss["form_end"]   = _date_from_any(it.get("end"))   or ss["form_start"]
     cur_color = it.get("color")
@@ -124,30 +128,60 @@ def _date_from_any(v):
                 continue
     return None
 
-def _pick_color_hex(label_hint: str = "") -> str:
-    if not label_hint:
-        return PALETTE_MAP["Blue"]
-    keys = list(PALETTE_MAP.values())
-    idx = abs(hash(label_hint)) % len(keys)
-    return keys[idx]
+def hex_to_rgba(hex_color: str, alpha: float = 0.22) -> str:
+    """#RRGGBB -> rgba(r,g,b,a), with safe fallbacks."""
+    if not isinstance(hex_color, str):
+        return f"rgba(59,130,246,{alpha})"  # blue fallback
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join([c*2 for c in h])
+    try:
+        r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+    except Exception:
+        return f"rgba(59,130,246,{alpha})"
+
+def soft_style_from_color(hex_color: str, dashed: bool = False) -> str:
+    """Pastel fill with solid/dashed border + black text."""
+    rgba = hex_to_rgba(hex_color, 0.22)
+    border_style = "dashed" if dashed else "solid"
+    return f"background:{rgba}; border:2px {border_style} {hex_color}; color:#111"
 
 def _build_item_dict(item_id: str) -> dict:
     col_hex = PALETTE_MAP[ss["form_color_label"]]
     gid = _ensure_group_id_from_name(ss.get("form_category_name", ""))
+    no_start = bool(ss.get("form_no_start"))
+    no_end   = bool(ss.get("form_no_end"))
     start = _date_from_any(ss.get("form_start")) or date.today()
     end   = _date_from_any(ss.get("form_end")) or start
     if end < start:
         start, end = end, start
-    return normalize_item({
+    # Replace with sentinels when open-ended so the JS renderer can build a range
+    s_for_store = OPEN_START_SENTINEL if no_start else start
+    e_for_store = OPEN_END_SENTINEL   if no_end   else end
+
+    item = {
         "id": item_id,
         "content": (ss["form_title"] or "").strip(),
         "subtitle": ss["form_subtitle"],
-        "start": start,
-        "end":   end,
-        "group": gid,  # empty => Ungrouped lane (renderer handles it)
+        "start": s_for_store,
+        "end":   e_for_store,
+        "group": gid,
         "color": col_hex,
-        "style": f"background:{col_hex}; border-color:{col_hex}",
-    })
+        "openStart": no_start,
+        "openEnd": no_end,
+        "className": " ".join([c for c in ["open-start" if no_start else "", "open-end" if no_end else ""] if c]),
+        "style": soft_style_from_color(col_hex, dashed=(no_start or no_end)),
+    }
+    # Let normalizer fill optional fields like 'type' if it wants to
+    normalized = normalize_item(item)
+    # Re-attach our custom flags in case normalizer discards unknown keys
+    normalized["openStart"] = item["openStart"]
+    normalized["openEnd"]   = item["openEnd"]
+    normalized["className"] = item["className"]
+    normalized["style"]     = item["style"]
+    normalized["color"]     = item["color"]
+    return normalized
 
 # ---- Auto-height utilities (grows with stacked overlaps) ----
 def _as_datetime(d):
@@ -189,9 +223,6 @@ def compute_auto_height(items, groups, stack=True):
     top_pad  = 120  # px for labels/axis
     total_lanes = 0
     for gid in group_ids:
-        if not stack:
-            total_lanes += 1
-            continue
         ivs = []
         for it in items:
             g = it.get("group") or "_ungrouped"
@@ -199,7 +230,7 @@ def compute_auto_height(items, groups, stack=True):
                 s = _as_datetime(it.get("start"))
                 e = _as_datetime(it.get("end") or it.get("start"))
                 ivs.append((s, e))
-        total_lanes += _max_overlap(ivs)
+        total_lanes += _max_overlap(ivs) if stack else 1
     return max(260, top_pad + per_lane * total_lanes)
 
 # ---------- Smart JSON importer ----------
@@ -208,6 +239,7 @@ def smart_import(text: str):
     Accepts common shapes:
       {items:[...], groups:[...]} or nested {data:{...}}, or case variants.
       If no groups are provided, groups are synthesized from item.category/groupName.
+      Preserves openStart/openEnd flags when present; detects sentinels as open.
     """
     doc = json.loads(text)
 
@@ -277,23 +309,30 @@ def smart_import(text: str):
             group_id = _ensure_group_from_item_name(gname) if gname else ""
         start = _date_from_any(it.get("start") or it.get("startDate"))
         end   = _date_from_any(it.get("end")   or it.get("endDate")) or start
-        if not start:
-            continue
-        if end and end < start:
+        if end and start and end < start:
             start, end = end, start
+
         color = it.get("color")
         if not color or not isinstance(color, str) or not color.startswith("#"):
             color = _pick_color_hex(title + subtitle)
+
+        open_start = bool(it.get("openStart", False)) or (start and start <= OPEN_START_SENTINEL)
+        open_end   = bool(it.get("openEnd", False))   or (end   and end   >= OPEN_END_SENTINEL)
+
         items_norm.append(normalize_item({
             "id": iid,
             "content": title,
             "subtitle": subtitle,
-            "start": start,
-            "end":   end,
+            "start": start or OPEN_START_SENTINEL if open_start else start,
+            "end":   end   or OPEN_END_SENTINEL   if open_end   else end,
             "group": group_id,
             "color": color,
-            "style": f"background:{color}; border-color:{color}",
+            "openStart": open_start,
+            "openEnd": open_end,
+            "className": " ".join([c for c in ["open-start" if open_start else "", "open-end" if open_end else ""] if c]),
+            "style": soft_style_from_color(color, dashed=(open_start or open_end)),
         }))
+
     return items_norm, groups_norm
 
 # ---------- Page ----------
@@ -313,7 +352,7 @@ with st.sidebar:
             if items_in:
                 ss["items"] = items_in
                 ss["groups"] = groups_in
-                ss["_goto_item_id"] = "(none)"         # defer selection reset
+                ss["_goto_item_id"] = "(none)"
                 ss["_last_prefill_from"] = "(none)"
                 st.success(f"Imported {len(items_in)} items, {len(groups_in)} groups.")
                 st.rerun()
@@ -347,7 +386,7 @@ _normalize_form_defaults()
 item_by_id = {str(it.get("id")): it for it in ss["items"]}
 picker_options = ["(none)"] + list(item_by_id.keys())
 
-# Determine value to show in the picker this run (no widget key → we control selection)
+# Determine value to show in the picker (no widget key → we control selection)
 proposed = ss.get("_goto_item_id")
 if proposed is None:
     proposed = ss.get("selected_item_id", "(none)")
@@ -364,13 +403,13 @@ selected_id = st.selectbox(
 )
 ss["selected_item_id"] = selected_id
 
-# Prefill only when selection actually changes (prevents overwriting your in-form edits)
+# Prefill only when selection actually changes
 if selected_id != ss.get("_last_prefill_from"):
     if selected_id != "(none)":
         _prefill_form_from_item(item_by_id[selected_id], groups_by_id)
     ss["_last_prefill_from"] = selected_id
 
-# ---- Edit/Add form (tab order: Title → Subtitle → Category → Start → End → Color) ----
+# ---- Edit/Add form (tab order: Title → Subtitle → Category → Start/NoStart → End/NoEnd → Color) ----
 with st.form("item_form", clear_on_submit=False):
     c1, c2 = st.columns([2, 2])
     with c1:
@@ -383,11 +422,13 @@ with st.form("item_form", clear_on_submit=False):
         hint = ", ".join([g["content"] for g in ss["groups"]][:6])
         st.text_input("Category", key="form_category_name", help=("Existing: " + hint) if hint else None)
     with c4:
-        st.date_input("Start", key="form_start")
+        st.checkbox("No start date (ongoing)", key="form_no_start")
+        st.date_input("Start", key="form_start", disabled=ss["form_no_start"])
 
     c5, c6 = st.columns([2, 2])
     with c5:
-        st.date_input("End", key="form_end")
+        st.checkbox("No end date (open-ended)", key="form_no_end")
+        st.date_input("End", key="form_end", disabled=ss["form_no_end"])
     with c6:
         st.selectbox("Color", PALETTE_OPTIONS, key="form_color_label")
 
@@ -403,7 +444,7 @@ with st.form("item_form", clear_on_submit=False):
 def _add_and_goto():
     new_id = str(uuid.uuid4())
     ss["items"].append(_build_item_dict(new_id))
-    ss["_goto_item_id"] = new_id  # will be applied via index next run
+    ss["_goto_item_id"] = new_id
     st.success("Item added.")
     st.rerun()
 
@@ -475,10 +516,31 @@ groups_view = [g for g in ss["groups"] if not ids or g["id"] in ids]
 enriched = []
 for i in items_view:
     j = dict(i)
-    j["orderKey"] = COLOR_RANK.get(j.get("color", ""), 99)
+    j["orderKey"]  = COLOR_RANK.get(j.get("color", ""), 99)
+    j["style"]     = soft_style_from_color(j.get("color", "#3B82F6"), dashed=bool(j.get("openStart") or j.get("openEnd")))
+    # Ensure className present for CSS rules (labels visible for open ranges)
+    cls = []
+    if j.get("openStart"): cls.append("open-start")
+    if j.get("openEnd"):   cls.append("open-end")
+    j["className"] = " ".join(cls)
     enriched.append(j)
 
 # Auto height that grows with overlaps (stack=True always)
+def compute_auto_height(items, groups, stack=True):
+    group_ids = [g.get("id") for g in groups] or ["_ungrouped"]
+    per_lane = 80; top_pad = 120
+    total_lanes = 0
+    for gid in group_ids:
+        ivs = []
+        for it in items:
+            g = it.get("group") or "_ungrouped"
+            if g == gid:
+                s = _as_datetime(it.get("start"))
+                e = _as_datetime(it.get("end") or it.get("start"))
+                ivs.append((s, e))
+        total_lanes += _max_overlap(ivs) if stack else 1
+    return max(260, top_pad + per_lane * total_lanes)
+
 height_px = compute_auto_height(enriched, groups_view, stack=True)
 
 export_req = ss.get("_export_exact")
