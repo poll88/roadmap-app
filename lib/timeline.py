@@ -1,5 +1,6 @@
-# lib/timeline.py — always-stacked timeline with drag/drop; robust boot + visible errors;
-# Montserrat in exported PNG; include-background checkbox respected.
+# lib/timeline.py — always-stacked + drag/drop + open-start/end rendering
+# Robust boot & visible errors; Montserrat in PNG; "include background" respected.
+# Open ranges: dashed borders, pastel fills, labels remain visible even if bar starts before view.
 
 import json
 from datetime import date, datetime
@@ -27,7 +28,6 @@ def _dt(d):
     return d
 
 def render_timeline(items, groups, selected_id: str = "", export=None, stack: bool = True, height_px: int | None = None):
-    # Make sure dates are ISO strings before shipping to JS
     items_json = json.dumps([
         {
             "id": i.get("id"),
@@ -38,6 +38,9 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
             "group": i.get("group"),
             "style": i.get("style"),
             "orderKey": i.get("orderKey", 0),
+            "openStart": bool(i.get("openStart", False)),
+            "openEnd":   bool(i.get("openEnd", False)),
+            "className": i.get("className", "")
         } for i in items
     ])
     groups_json = json.dumps([{"id": g.get("id"), "content": g.get("content")} for g in groups])
@@ -67,6 +70,11 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
     .ttl { font-weight:700 }
     .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
 
+    /* Make text black and ensure label stays visible for open ranges */
+    .vis-item .vis-item-content, .vis-item .ttl, .vis-item .sub { color:#111 !important; }
+    .vis-item.open-start .vis-item-content,
+    .vis-item.open-end .vis-item-content { overflow: visible !important; }
+
     #timeline.exporting,
     #timeline.exporting .vis-timeline,
     #timeline.exporting .vis-panel,
@@ -84,11 +92,11 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
   </style>
 </head>
 <body>
-    <div id="wrap">
-      <!-- <div class="hint">Drag to move · Drag up/down to change row</div> -->
-      <div id="timeline"></div>
-    </div>
-
+  <div id="wrap">
+    <!-- Remove this DIV if you don't want the hint -->
+    <!-- <div class="hint">Drag to move · Drag up/down to change row</div> -->
+    <div id="timeline"></div>
+  </div>
 
   <script>
     const CSS_URLS = __CSS_URLS__;
@@ -129,7 +137,6 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
 
     function parseIso(d){
       if (!d) return null;
-      // Strings like "2025-09-04" parse fine; if we somehow get Python reprs, drop them.
       if (/^\\d{4}[-/]\\d{2}[-/]\\d{2}/.test(d)) { const t = new Date(d); return isNaN(+t) ? null : t; }
       return null;
     }
@@ -138,19 +145,23 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
       const el = document.getElementById('timeline');
       if (!el || !window.vis) return;
 
-      // normalize/guard items
       const itemsIn = Array.isArray(ITEMS) ? ITEMS : [];
       const safeItems = [];
       for (const it of itemsIn) {
         let s = parseIso(it.start);
         let e = parseIso(it.end || it.start);
-        if (!s) continue;
-        if (e && e < s) { const tmp = s; s = e; e = tmp; }
+        if (!s && !it.openStart) continue;            // require a start unless explicitly open
+        // Use sentinels when open to guarantee we render a bar that spans into view
+        if (it.openStart && !s) s = new Date('1970-01-01');
+        if (it.openEnd   && !e) e = new Date('2100-01-01');
+        if (e && s && e < s) { const tmp = s; s = e; e = tmp; }
+
         safeItems.push({
           id: it.id,
           content: '<div class="ttl">' + (it.content || '') + '</div><div class="sub">' + (it.subtitle || '') + '</div>',
           start: s, end: e, style: it.style, orderKey: (it.orderKey ?? 0),
-          group: (it.group && String(it.group).trim()) ? it.group : "_ungrouped"
+          group: (it.group && String(it.group).trim()) ? it.group : "_ungrouped",
+          className: (it.className || '')
         });
       }
 
@@ -187,10 +198,16 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
         const tl = new vis.Timeline(el, items, groups, options);
         window._tl = tl;
 
+        // Initial window: ignore extreme sentinels so we don't zoom out to centuries
         if (items.length) {
-          const arr = items.get();
-          const mins = Math.min.apply(null, arr.map(x => +new Date(x.start)));
-          const maxs = Math.max.apply(null, arr.map(x => +new Date(x.end || x.start)));
+          const arr = items.get().filter(x => {
+            const y1 = (x.start || new Date()).getFullYear();
+            const y2 = (x.end   || x.start || new Date()).getFullYear();
+            return (y1 >= 1990 && y1 <= 2090) && (y2 >= 1990 && y2 <= 2090);
+          });
+          const base = arr.length ? arr : items.get();
+          const mins = Math.min.apply(null, base.map(x => +new Date(x.start)));
+          const maxs = Math.max.apply(null, base.map(x => +new Date(x.end || x.start)));
           if (isFinite(mins) && isFinite(maxs)) {
             const pad = Math.max(3*86400000, Math.round((maxs - mins) * 0.05));
             tl.setWindow(new Date(mins - pad), new Date(maxs + pad), { animation: false });
@@ -207,7 +224,6 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
         .then(() => { try { layout(); } catch(e) { showError("layout() threw", e); } })
         .catch((e) => { showError("script/css load failed", e); });
 
-      // Kick PNG export after first paint if requested
       if (EXPORT && EXPORT.kind === 'png') setTimeout(() => { try { exportPNG(EXPORT); } catch(e) { showError("export failed", e); } }, 80);
     })();
 
@@ -248,12 +264,10 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
              : '#ffffff')
           : 'transparent';
 
-      // Remove frame; make panels transparent for transparent export
       const old = { border: tl.style.border, borderRadius: tl.style.borderRadius, background: tl.style.background, backgroundColor: tl.style.backgroundColor };
       tl.style.border = 'none'; tl.style.borderRadius = '0px';
       if (!includeBg) { tl.classList.add('exporting'); tl.style.background='transparent'; tl.style.backgroundColor='transparent'; }
 
-      // Force inline font-family for clone
       function walk(el, fn){ fn(el); for (let i=0;i<el.children.length;i++) walk(el.children[i], fn); }
       const touched=[]; const fam="'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
       walk(tl, n => { const p=n.style.fontFamily; n.style.fontFamily=fam; touched.push([n,p]); });
