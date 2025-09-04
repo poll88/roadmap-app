@@ -1,6 +1,9 @@
-# lib/timeline.py — always-stacked + drag/drop + open-start/end rendering
-# Robust boot & visible errors; Montserrat in PNG; "include background" respected.
-# Open ranges: dashed borders, pastel fills, labels remain visible even if bar starts before view.
+# lib/timeline.py — always-stacked timeline with drag/drop and open-range styling
+# • Pastel fills, black text
+# • Per-side dashed borders via inline styles (open-start / open-end)
+# • Labels remain visible for open ranges
+# • PNG export with Montserrat + background toggle
+# • Robust loader with readable error messages
 
 import json
 from datetime import date, datetime
@@ -70,8 +73,9 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
     .ttl { font-weight:700 }
     .sub { font-size:12px; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
 
-    /* Make text black and ensure label stays visible for open ranges */
+    /* readable text */
     .vis-item .vis-item-content, .vis-item .ttl, .vis-item .sub { color:#111 !important; }
+    /* keep labels visible when item starts before window */
     .vis-item.open-start .vis-item-content,
     .vis-item.open-end .vis-item-content { overflow: visible !important; }
 
@@ -85,16 +89,12 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
     #timeline.exporting .vis-background,
     #timeline.exporting .vis-time-axis { background: transparent !important; }
 
-    .hint { position:absolute; right:12px; top:8px; padding:4px 8px; border-radius:8px;
-            background: rgba(99,102,241,.08); color:#444; font-size:12px; user-select:none; }
     .err { padding:14px; color:#b00020; font-size:13px; }
     .err code { display:block; white-space:pre-wrap; background:#fff3f4; border-radius:8px; padding:8px; margin-top:8px; }
   </style>
 </head>
 <body>
   <div id="wrap">
-    <!-- Remove this DIV if you don't want the hint -->
-    <!-- <div class="hint">Drag to move · Drag up/down to change row</div> -->
     <div id="timeline"></div>
   </div>
 
@@ -151,7 +151,6 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
         let s = parseIso(it.start);
         let e = parseIso(it.end || it.start);
         if (!s && !it.openStart) continue;            // require a start unless explicitly open
-        // Use sentinels when open to guarantee we render a bar that spans into view
         if (it.openStart && !s) s = new Date('1970-01-01');
         if (it.openEnd   && !e) e = new Date('2100-01-01');
         if (e && s && e < s) { const tmp = s; s = e; e = tmp; }
@@ -173,7 +172,7 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
       const groups = new vis.DataSet(allGroups.map(g => ({ id: g.id, content: g.content })));
 
       const options = {
-        stack: true,                 // always stacked
+        stack: true,
         editable: { updateTime: true, updateGroup: true, add: false, remove: false },
         multiselect: true,
         snap: null,
