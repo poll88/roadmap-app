@@ -3,6 +3,7 @@
 # • Per-side dashed borders via inline styles (open-start / open-end)
 # • Labels remain visible for open ranges
 # • PNG export with Montserrat + background toggle
+# • Export now LOCKS to the CURRENT VIEW WINDOW (exact copy of what you see)
 # • Robust loader with readable error messages
 
 import json
@@ -226,10 +227,11 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
       if (EXPORT && EXPORT.kind === 'png') setTimeout(() => { try { exportPNG(EXPORT); } catch(e) { showError("export failed", e); } }, 80);
     })();
 
-    // ---------- PNG Export ----------
+    // ---------- PNG Export (locked to current view) ----------
     async function exportPNG(EXPORT) {
       const tl = document.getElementById('timeline'); if (!tl) return;
 
+      // Load dom-to-image-more
       async function loadDTI(urls) {
         if (window._dtiReady) return;
         for (const u of urls) {
@@ -240,8 +242,9 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
         }
         throw new Error('dom-to-image-more failed to load');
       }
-      await loadDTI(DTI_URLS);
+      await loadDTI(__DTI_URLS__);
 
+      // Ensure Montserrat is ready
       async function ensureFonts(){
         if (document.fonts && document.fonts.ready) {
           try { await document.fonts.ready; } catch {}
@@ -254,6 +257,28 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
       }
       await ensureFonts();
 
+      // ---- Lock the timeline to the CURRENT visible window ----
+      const tlObj = window._tl;
+      let restoreMin = null, restoreMax = null;
+      let unlock = () => {};
+      if (tlObj && typeof tlObj.getWindow === 'function' && tlObj.options) {
+        try {
+          const win = tlObj.getWindow();                 // { start: Date, end: Date }
+          restoreMin = tlObj.options.min;
+          restoreMax = tlObj.options.max;
+          tlObj.setOptions({ min: win.start, max: win.end });
+          // wait two RAFs to ensure re-render at the locked window
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          unlock = () => {
+            const opt = {};
+            if (restoreMin != null) opt.min = restoreMin; else opt.min = null;
+            if (restoreMax != null) opt.max = restoreMax; else opt.max = null;
+            tlObj.setOptions(opt);
+          };
+        } catch (e) { /* if anything fails we just export as-is */ }
+      }
+
+      // Background behavior
       const includeBg = !!(EXPORT && EXPORT.includeBg);
       function isTransparent(c){ return !c || c === 'transparent' || (c.indexOf('rgba(0, 0, 0, 0)') !== -1); }
       const csTl = getComputedStyle(tl), csBody = getComputedStyle(document.body);
@@ -263,10 +288,12 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
              : '#ffffff')
           : 'transparent';
 
+      // Remove frame; make panels transparent for transparent export
       const old = { border: tl.style.border, borderRadius: tl.style.borderRadius, background: tl.style.background, backgroundColor: tl.style.backgroundColor };
       tl.style.border = 'none'; tl.style.borderRadius = '0px';
       if (!includeBg) { tl.classList.add('exporting'); tl.style.background='transparent'; tl.style.backgroundColor='transparent'; }
 
+      // Force inline font-family so clone matches screen
       function walk(el, fn){ fn(el); for (let i=0;i<el.children.length;i++) walk(el.children[i], fn); }
       const touched=[]; const fam="'Montserrat', ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
       walk(tl, n => { const p=n.style.fontFamily; n.style.fontFamily=fam; touched.push([n,p]); });
@@ -280,9 +307,12 @@ def render_timeline(items, groups, selected_id: str = "", export=None, stack: bo
       } catch (err) {
         showError("PNG export failed", err);
       } finally {
+        // Restore fonts and visual tweaks
         for (const [el,p] of touched) el.style.fontFamily = p || '';
         tl.style.border = old.border; tl.style.borderRadius = old.borderRadius; tl.style.background = old.background; tl.style.backgroundColor = old.backgroundColor;
         tl.classList.remove('exporting');
+        // Restore original min/max window if we changed it
+        try { unlock(); } catch {}
       }
     }
   </script>
